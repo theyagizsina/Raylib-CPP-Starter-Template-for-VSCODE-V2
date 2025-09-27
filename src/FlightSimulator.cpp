@@ -323,15 +323,14 @@ void FlightSimulator::handleInput()
 void FlightSimulator::draw()
 {
     BeginDrawing();
-    ClearBackground(SKYBLUE);
-
+    
+    // Sky gradient background
+    ClearBackground((Color){135, 206, 235, 255}); // Sky blue
+    
     BeginMode3D(camera);
 
-    // Draw ground plane
-    DrawPlane((Vector3){ 0, 0, 0 }, (Vector2){ 2000, 2000 }, GREEN);
-
-    // Draw grid
-    DrawGrid(100, 100.0f);
+    // Draw enhanced ground environment
+    drawEnvironment();
 
     // Draw aircraft
     drawAircraft();
@@ -341,7 +340,7 @@ void FlightSimulator::draw()
 
     EndMode3D();
 
-    // Draw HUD
+    // Draw enhanced HUD
     drawHUD();
 
     EndDrawing();
@@ -415,11 +414,94 @@ void FlightSimulator::drawFlightPath()
     }
 }
 
+void FlightSimulator::drawEnvironment()
+{
+    // Enhanced ground plane with texture-like appearance
+    DrawPlane((Vector3){ 0, 0, 0 }, (Vector2){ 5000, 5000 }, (Color){34, 139, 34, 255}); // Forest green
+    
+    // Major grid lines every 1000m (white)
+    for (int i = -2500; i <= 2500; i += 1000) {
+        if (i == 0) continue; // Skip center lines
+        DrawLine3D((Vector3){(float)i, 0, -2500}, (Vector3){(float)i, 0, 2500}, WHITE);
+        DrawLine3D((Vector3){-2500, 0, (float)i}, (Vector3){2500, 0, (float)i}, WHITE);
+    }
+    
+    // Center axes (more prominent)
+    DrawLine3D((Vector3){0, 0, -2500}, (Vector3){0, 0, 2500}, RED);      // North-South (Red)
+    DrawLine3D((Vector3){-2500, 0, 0}, (Vector3){2500, 0, 0}, GREEN);    // East-West (Green)
+    
+    // Minor grid lines every 500m (gray)
+    for (int i = -2500; i <= 2500; i += 500) {
+        if (i % 1000 == 0) continue; // Skip major grid lines
+        DrawLine3D((Vector3){(float)i, 0, -2500}, (Vector3){(float)i, 0, 2500}, LIGHTGRAY);
+        DrawLine3D((Vector3){-2500, 0, (float)i}, (Vector3){2500, 0, (float)i}, LIGHTGRAY);
+    }
+    
+    // Landmark buildings/towers for reference
+    Vector3 buildingPositions[] = {
+        {500, 0, 500},    // Southeast
+        {-500, 0, 500},   // Southwest  
+        {500, 0, -500},   // Northeast
+        {-500, 0, -500},  // Northwest
+        {0, 0, 1000},     // North
+        {0, 0, -1000},    // South
+        {1000, 0, 0},     // East
+        {-1000, 0, 0}     // West
+    };
+    
+    Color buildingColors[] = {BLUE, RED, YELLOW, PURPLE, ORANGE, PINK, BROWN, DARKGRAY};
+    
+    for (int i = 0; i < 8; i++) {
+        // Draw building base
+        DrawCube(buildingPositions[i], 20, 50, 20, buildingColors[i]);
+        DrawCubeWires(buildingPositions[i], 20, 50, 20, BLACK);
+        
+        // Draw antenna/spire on top
+        Vector3 spirePos = {buildingPositions[i].x, buildingPositions[i].y + 35, buildingPositions[i].z};
+        DrawCylinder(spirePos, 1, 1, 20, 8, DARKGRAY);
+    }
+    
+    // Runway strips for additional reference
+    // Draw runway (black asphalt)
+    DrawCube((Vector3){0, 0.05f, -1450}, 400, 0.1f, 100, (Color){32, 32, 32, 255});
+    
+    // Runway center line (yellow dashes)
+    for (int i = -180; i <= 180; i += 40) {
+        DrawCube((Vector3){(float)i, 0.11f, -1450}, 20, 0.02f, 2, YELLOW);
+    }
+    
+    // Runway edge lines (white)
+    DrawLine3D((Vector3){-200, 0.11f, -1400}, (Vector3){200, 0.11f, -1400}, WHITE);
+    DrawLine3D((Vector3){-200, 0.11f, -1500}, (Vector3){200, 0.11f, -1500}, WHITE);
+    
+    // Distance markers every 1000m from origin
+    for (int dist = 1000; dist <= 3000; dist += 1000) {
+        // North marker
+        DrawSphere((Vector3){0, 5, (float)dist}, 3, BLUE);
+        DrawSphere((Vector3){0, 5, (float)-dist}, 3, BLUE);
+        // East marker  
+        DrawSphere((Vector3){(float)dist, 5, 0}, 3, RED);
+        DrawSphere((Vector3){(float)-dist, 5, 0}, 3, RED);
+    }
+    
+    // Origin marker (large)
+    DrawSphere((Vector3){0, 2, 0}, 5, GOLD);
+    DrawCylinder((Vector3){0, 10, 0}, 2, 2, 20, 6, GOLD);
+}
+
 void FlightSimulator::drawHUD()
 {
     // Enhanced flight data display
     double rollRad, pitchRad, yawRad;
     QuaternionOperations::toEulerZYX(engineState.q, rollRad, pitchRad, yawRad);
+    
+    // Convert to aviation standard angles
+    double rollDeg = rollRad * 180.0 / M_PI;
+    double pitchDeg = pitchRad * 180.0 / M_PI;
+    double headingDeg = yawRad * 180.0 / M_PI;
+    
+    // Normalize heading to 0-360 degrees
+    if (headingDeg < 0) headingDeg += 360.0;
 
     char text[256];
     
@@ -444,29 +526,33 @@ void FlightSimulator::drawHUD()
     sprintf(text, "Sideslip: %.2f°", currentBeta * 180.0 / M_PI);
     DrawText(text, 10, 130, 18, fabs(currentBeta) > 0.1 ? YELLOW : WHITE);
     
-    // Attitude data
-    sprintf(text, "Roll: %.1f°", rollRad * 180.0 / M_PI);
-    DrawText(text, 10, 160, 18, WHITE);
+    // Attitude data (Aviation Standard Format)
+    DrawText("ATTITUDE:", 10, 150, 14, YELLOW);
+    
+    sprintf(text, "Roll: %+.1f°", rollDeg);
+    Color rollColor = (fabs(rollDeg) > 45.0) ? RED : (fabs(rollDeg) > 20.0) ? YELLOW : WHITE;
+    DrawText(text, 10, 170, 18, rollColor);
 
-    sprintf(text, "Pitch: %.1f°", pitchRad * 180.0 / M_PI);
-    DrawText(text, 10, 180, 18, WHITE);
+    sprintf(text, "Pitch: %+.1f°", pitchDeg);
+    Color pitchColor = (fabs(pitchDeg) > 30.0) ? RED : (fabs(pitchDeg) > 15.0) ? YELLOW : WHITE;
+    DrawText(text, 10, 190, 18, pitchColor);
 
-    sprintf(text, "Yaw: %.1f°", yawRad * 180.0 / M_PI);
-    DrawText(text, 10, 200, 18, WHITE);
+    sprintf(text, "Heading: %03.0f°", headingDeg);
+    DrawText(text, 10, 210, 18, WHITE);
 
     // Controls
-    DrawText("FLIGHT CONTROLS:", 10, 240, 14, YELLOW);
-    DrawText("W/S - Elevator (W=Down, S=Up)", 10, 260, 12, WHITE);
-    DrawText("A/D - Aileron (A=Left, D=Right)", 10, 275, 12, WHITE);
-    DrawText("Q/E - Rudder (Yaw)", 10, 290, 12, WHITE);
-    DrawText("Shift/Ctrl - Throttle", 10, 305, 12, WHITE);
+    DrawText("FLIGHT CONTROLS:", 10, 250, 14, YELLOW);
+    DrawText("W/S - Elevator (W=Down, S=Up)", 10, 270, 12, WHITE);
+    DrawText("A/D - Aileron (A=Left, D=Right)", 10, 285, 12, WHITE);
+    DrawText("Q/E - Rudder (Yaw)", 10, 300, 12, WHITE);
+    DrawText("Shift/Ctrl - Throttle", 10, 315, 12, WHITE);
     
-    DrawText("CAMERA CONTROLS:", 10, 330, 14, YELLOW);
-    DrawText("SPACE - Pause/Resume", 10, 350, 12, WHITE);
-    DrawText("R - Reset Simulation", 10, 365, 12, WHITE);
-    DrawText("C - Switch Camera", 10, 380, 12, WHITE);
-    DrawText("Left Click+Drag - Camera", 10, 395, 12, WHITE);
-    DrawText("Mouse Wheel - Zoom", 10, 410, 12, WHITE);
+    DrawText("CAMERA CONTROLS:", 10, 340, 14, YELLOW);
+    DrawText("SPACE - Pause/Resume", 10, 360, 12, WHITE);
+    DrawText("R - Reset Simulation", 10, 375, 12, WHITE);
+    DrawText("C - Switch Camera", 10, 390, 12, WHITE);
+    DrawText("Left Click+Drag - Camera", 10, 405, 12, WHITE);
+    DrawText("Mouse Wheel - Zoom", 10, 420, 12, WHITE);
     
     // Control status display (right side)
     DrawText("CONTROL STATUS:", GetScreenWidth() - 200, 50, 14, YELLOW);
@@ -605,43 +691,334 @@ void FlightSimulator::drawAttitudeIndicator()
     int centerY = 150;
     int radius = 80;
     
-    // Draw attitude indicator background
-    DrawCircle(centerX, centerY, radius, Fade(BLACK, 0.7f));
-    DrawCircleLines(centerX, centerY, radius, WHITE);
+    // Draw outer frame
+    DrawCircle(centerX, centerY, radius + 5, BLACK);
+    DrawCircleLines(centerX, centerY, radius + 5, WHITE);
+    DrawCircle(centerX, centerY, radius, BLACK);
     
-    // Draw horizon line (simplified)
-    float pitchOffset = (float)(pitchRad * 100.0);
-    float rollAngle = (float)rollRad;
+    // Convert to degrees for calculations
+    float pitchDeg = (float)(pitchRad * 180.0 / M_PI);
+    float rollDeg = (float)(rollRad * 180.0 / M_PI);
     
-    Vector2 p1 = { centerX - radius * cosf(rollAngle), centerY - radius * sinf(rollAngle) + pitchOffset };
-    Vector2 p2 = { centerX + radius * cosf(rollAngle), centerY + radius * sinf(rollAngle) + pitchOffset };
+    // Handle gimbal lock and extreme attitudes
+    // Clamp pitch for display stability (real aircraft rarely exceed ±70°)
+    float displayPitchDeg = pitchDeg;
+    if (displayPitchDeg > 85.0f) displayPitchDeg = 85.0f;
+    if (displayPitchDeg < -85.0f) displayPitchDeg = -85.0f;
     
-    // Sky (above horizon)
-    if (pitchOffset < radius) {
-        DrawCircle(centerX, centerY - (int)pitchOffset, radius, Fade(SKYBLUE, 0.5f));
+    // For extreme pitch attitudes, stabilize roll display
+    float displayRollRad = rollRad;
+    if (fabsf(pitchDeg) > 75.0f) {
+        // In extreme pitch, limit roll rotation to prevent gimbal lock visual artifacts
+        float rollStabilizationFactor = (90.0f - fabsf(pitchDeg)) / 15.0f; // Scale from 1.0 to 0.0
+        rollStabilizationFactor = fmaxf(0.0f, fminf(1.0f, rollStabilizationFactor));
+        displayRollRad *= rollStabilizationFactor;
     }
     
-    // Ground (below horizon)
-    if (pitchOffset > -radius) {
-        DrawCircle(centerX, centerY - (int)pitchOffset + radius, radius, Fade(BROWN, 0.5f));
+    // Scale: 1 degree = 2.5 pixels for realistic appearance
+    float pitchPixelsPerDegree = 2.5f;
+    float horizonOffset = displayPitchDeg * pitchPixelsPerDegree;
+    
+    // Clamp extreme horizon offset values
+    if (horizonOffset > radius * 1.5f) horizonOffset = radius * 1.5f;
+    if (horizonOffset < -radius * 1.5f) horizonOffset = -radius * 1.5f;
+    
+    // Draw sky and ground with proper masking
+    for (int y = -radius; y <= radius; y++) {
+        for (int x = -radius; x <= radius; x++) {
+            if (x*x + y*y <= radius*radius) {
+                // Apply roll rotation to coordinates
+                float cosRoll = cosf(displayRollRad);  // Remove negative sign for correct sky/ground rotation
+                float sinRoll = sinf(displayRollRad);
+                float rotatedY = x * sinRoll + y * cosRoll;
+                
+                // Determine sky vs ground based on rotated position relative to horizon
+                if (rotatedY < horizonOffset) {
+                    // SKY - above horizon line
+                    DrawPixel(centerX + x, centerY + y, (Color){135, 206, 235, 255}); // Sky blue
+                } else {
+                    // GROUND - below horizon line  
+                    DrawPixel(centerX + x, centerY + y, (Color){101, 67, 33, 255}); // Earth brown
+                }
+            }
+        }
     }
     
-    // Horizon line
-    DrawLineEx(p1, p2, 3.0f, WHITE);
+    // White horizon line removed - only sky/ground colors show the horizon
     
-    // Aircraft symbol (fixed in center)
-    DrawLine(centerX - 20, centerY, centerX + 20, centerY, YELLOW);
-    DrawLine(centerX - 15, centerY - 5, centerX - 15, centerY + 5, YELLOW);
-    DrawLine(centerX + 15, centerY - 5, centerX + 15, centerY + 5, YELLOW);
+    // Draw pitch ladder removed - only sky/ground display
+    
+    // Draw aircraft reference symbol (FIXED in center)
+    // Wing reference bars
+    DrawRectangle(centerX - 30, centerY - 2, 12, 4, YELLOW);
+    DrawRectangle(centerX + 18, centerY - 2, 12, 4, YELLOW);
+    
+    // Center fuselage reference
+    DrawRectangle(centerX - 8, centerY - 1, 16, 2, YELLOW);
     DrawCircle(centerX, centerY, 3, YELLOW);
     
-    // Roll scale marks
-    for (int i = -60; i <= 60; i += 30) {
-        if (i == 0) continue;
-        float angle = (float)(i * M_PI / 180.0);
-        Vector2 start = { centerX + (radius - 10) * sinf(angle), centerY - (radius - 10) * cosf(angle) };
-        Vector2 end = { centerX + radius * sinf(angle), centerY - radius * cosf(angle) };
-        DrawLineEx(start, end, 2.0f, WHITE);
+    // Vertical reference line
+    DrawLine(centerX, centerY - 8, centerX, centerY + 8, YELLOW);
+    
+    // Roll scale (outer ring) - FIXED markers
+    for (int roll = -60; roll <= 60; roll += 10) {
+        if (roll == 0) continue;
+        
+        float angle = (float)(roll * M_PI / 180.0);
+        int markLength = (abs(roll) % 30 == 0) ? 15 : 10;
+        float markThickness = (abs(roll) % 30 == 0) ? 3.0f : 2.0f;
+        
+        Vector2 outerPoint = {
+            centerX + (radius + 5) * sinf(angle),
+            centerY - (radius + 5) * cosf(angle)
+        };
+        Vector2 innerPoint = {
+            centerX + (radius + 5 - markLength) * sinf(angle),
+            centerY - (radius + 5 - markLength) * cosf(angle)
+        };
+        
+        DrawLineEx(outerPoint, innerPoint, markThickness, WHITE);
+        
+        // Roll angle numbers
+        if (abs(roll) % 30 == 0) {
+            char rollText[4];
+            sprintf(rollText, "%d", abs(roll));
+            Vector2 textPos = {
+                centerX + (radius + 20) * sinf(angle) - 6,
+                centerY - (radius + 20) * cosf(angle) - 6
+            };
+            DrawText(rollText, (int)textPos.x, (int)textPos.y, 10, WHITE);
+        }
+    }
+    
+    // Roll reference triangle at top (FIXED)
+    Vector2 rollRef[3] = {
+        {(float)centerX, (float)(centerY - radius - 8)},
+        {(float)(centerX - 6), (float)(centerY - radius - 18)},
+        {(float)(centerX + 6), (float)(centerY - radius - 18)}
+    };
+    DrawTriangle(rollRef[0], rollRef[1], rollRef[2], WHITE);
+    
+    // Bank angle pointer (MOVES with aircraft)
+    Vector2 bankPointer[3] = {
+        {(float)centerX, (float)(centerY - radius - 3)},
+        {(float)(centerX - 5), (float)(centerY - radius - 12)},
+        {(float)(centerX + 5), (float)(centerY - radius - 12)}
+    };
+    
+    // Rotate bank pointer according to roll
+    for (int i = 0; i < 3; i++) {
+        float x = bankPointer[i].x - centerX;
+        float y = bankPointer[i].y - centerY;
+        bankPointer[i].x = centerX + x * cosf(-displayRollRad) - y * sinf(-displayRollRad);
+        bankPointer[i].y = centerY + x * sinf(-displayRollRad) + y * cosf(-displayRollRad);
+    }
+    
+    DrawTriangle(bankPointer[0], bankPointer[1], bankPointer[2], YELLOW);
+    
+    // COMPACT COCKPIT INSTRUMENTS - Purple outlined areas in your image
+    
+    // Convert units for cockpit instruments
+    float airspeeedKnots = currentAirspeed * 1.94384f; // m/s to knots
+    float altitudeFeet = -engineState.Z * 3.28084f;    // meters to feet
+    float climbRateFpm = currentClimbRate * 196.85f;   // m/s to feet per minute
+    
+    char instText[64];
+    
+    // LEFT SIDE - COMPACT AIRSPEED INDICATOR (Knots)
+    int asX = centerX - radius - 85;  // Left of attitude indicator
+    int asY = centerY - 60;
+    int asWidth = 65;
+    int asHeight = 120;
+    
+    // Airspeed background
+    DrawRectangle(asX, asY, asWidth, asHeight, Fade(BLACK, 0.85f));
+    DrawRectangleLines(asX, asY, asWidth, asHeight, WHITE);
+    
+    // Airspeed tape marks
+    for (int speed = 0; speed <= 200; speed += 20) {
+        float relativeSpeed = speed - airspeeedKnots;
+        if (fabsf(relativeSpeed) <= 60) {
+            int y = (asY + asHeight/2) - (int)(relativeSpeed * 1.0f);
+            if (y >= asY + 5 && y <= asY + asHeight - 5) {
+                DrawLine(asX + asWidth - 12, y, asX + asWidth - 2, y, WHITE);
+                if (speed % 40 == 0 && speed != (int)airspeeedKnots) {
+                    sprintf(instText, "%d", speed);
+                    DrawText(instText, asX + 5, y - 4, 8, WHITE);
+                }
+            }
+        }
+    }
+    
+    // Current airspeed value (center)
+    sprintf(instText, "%.0f", airspeeedKnots);
+    DrawRectangle(asX + asWidth - 2, (asY + asHeight/2) - 8, 25, 16, GREEN);
+    DrawText(instText, asX + asWidth + 2, (asY + asHeight/2) - 6, 10, BLACK);
+    DrawText("KIAS", asX + 20, asY + asHeight + 5, 8, WHITE);
+    
+    // RIGHT SIDE - COMPACT ALTITUDE INDICATOR (Feet)
+    int altX = centerX + radius + 20;  // Right of attitude indicator  
+    int altY = centerY - 60;
+    int altWidth = 65;
+    int altHeight = 120;
+    
+    // Altitude background
+    DrawRectangle(altX, altY, altWidth, altHeight, Fade(BLACK, 0.85f));
+    DrawRectangleLines(altX, altY, altWidth, altHeight, WHITE);
+    
+    // Altitude tape marks
+    int baseAlt = ((int)(altitudeFeet / 200)) * 200;
+    for (int alt = baseAlt - 600; alt <= baseAlt + 600; alt += 100) {
+        float relativeAlt = alt - altitudeFeet;
+        if (fabsf(relativeAlt) <= 400) {
+            int y = (altY + altHeight/2) + (int)(relativeAlt * 0.15f);
+            if (y >= altY + 5 && y <= altY + altHeight - 5) {
+                DrawLine(altX + 2, y, altX + 12, y, WHITE);
+                if (alt % 200 == 0 && alt != (int)altitudeFeet) {
+                    sprintf(instText, alt >= 1000 ? "%.0fK" : "%d", alt >= 1000 ? alt/1000.0f : alt);
+                    DrawText(instText, altX + 15, y - 4, 8, WHITE);
+                }
+            }
+        }
+    }
+    
+    // Current altitude value (center)
+    sprintf(instText, "%.0f", altitudeFeet);
+    DrawRectangle(altX - 25, (altY + altHeight/2) - 8, 27, 16, GREEN);
+    DrawText(instText, altX - 22, (altY + altHeight/2) - 6, 10, BLACK);
+    DrawText("ALT FT", altX + 15, altY + altHeight + 5, 8, WHITE);
+    
+    // VARIOMETER - Below altitude (Compact)
+    int vsiX = altX;
+    int vsiY = altY + altHeight + 20;
+    int vsiWidth = 65;
+    int vsiHeight = 35;
+    
+    DrawRectangle(vsiX, vsiY, vsiWidth, vsiHeight, Fade(BLACK, 0.85f));
+    DrawRectangleLines(vsiX, vsiY, vsiWidth, vsiHeight, WHITE);
+    
+    // VSI scale marks (-1000 to +1000 FPM)
+    for (int rate = -1000; rate <= 1000; rate += 500) {
+        if (rate == 0) continue;
+        float xPos = (vsiX + vsiWidth/2) + (rate / 2000.0f) * (vsiWidth * 0.7f);
+        if (xPos >= vsiX + 5 && xPos <= vsiX + vsiWidth - 5) {
+            DrawLine((int)xPos, vsiY + vsiHeight - 8, (int)xPos, vsiY + vsiHeight - 3, WHITE);
+            sprintf(instText, "%+.0f", rate/100.0f);  // Show in hundreds
+            int textW = MeasureText(instText, 6);
+            DrawText(instText, (int)(xPos - textW/2), vsiY + 3, 6, WHITE);
+        }
+    }
+    
+    // Current VSI pointer
+    float vsiClampedFpm = fmin(fmax(climbRateFpm, -2000), 2000);
+    float vsiPointerX = (vsiX + vsiWidth/2) + (vsiClampedFpm / 2000.0f) * (vsiWidth * 0.7f);
+    DrawTriangle({vsiPointerX, (float)(vsiY + vsiHeight - 3)}, 
+                {vsiPointerX - 3.0f, (float)(vsiY + vsiHeight + 3)},
+                {vsiPointerX + 3.0f, (float)(vsiY + vsiHeight + 3)}, GREEN);
+    
+    // VSI digital readout
+    sprintf(instText, "%+.0f", climbRateFpm);
+    Color vsiColor = (climbRateFpm > 100) ? GREEN : (climbRateFpm < -100) ? RED : WHITE;
+    int vsiTextWidth = MeasureText(instText, 8);
+    DrawText(instText, vsiX + vsiWidth/2 - vsiTextWidth/2, vsiY + vsiHeight/2 - 4, 8, vsiColor);
+    DrawText("VSI FPM", vsiX + 15, vsiY + vsiHeight + 5, 8, WHITE);
+    
+    // G-METRE - Below VSI (Compact)
+    int gX = centerX;
+    int gY = vsiY + vsiHeight + 25;
+    int gWidth = 65;
+    int gHeight = 35;
+    
+    // Calculate G-forces from body frame acceleration (REAL METHOD)
+    static double lastVx = 0.0, lastVy = 0.0, lastVz = 0.0;
+    static float lastTime = 0.0f;
+    float currentTime = GetTime();
+    float deltaTime = currentTime - lastTime;
+    
+    float gForce = 1.0f; // Default 1G
+    
+    if (deltaTime > 0.016f) { // Update every ~60fps
+        // Calculate NED accelerations first
+        double ax_ned = (engineState.Vx - lastVx) / deltaTime;
+        double ay_ned = (engineState.Vy - lastVy) / deltaTime;
+        double az_ned = (engineState.Vz - lastVz) / deltaTime;
+        
+        // Transform NED accelerations to body frame using quaternion
+        double rollRad, pitchRad, yawRad;
+        QuaternionOperations::toEulerZYX(engineState.q, rollRad, pitchRad, yawRad);
+        
+        // Rotation matrix from NED to body frame
+        double cosR = cos(rollRad), sinR = sin(rollRad);
+        double cosP = cos(pitchRad), sinP = sin(pitchRad);  
+        double cosY = cos(yawRad), sinY = sin(yawRad);
+        
+        // Body frame accelerations (u_dot, v_dot, w_dot)
+        double ax_body = cosY*cosP*ax_ned + sinY*cosP*ay_ned - sinP*az_ned;
+        double ay_body = (-sinY*cosR + cosY*sinP*sinR)*ax_ned + (cosY*cosR + sinY*sinP*sinR)*ay_ned + cosP*sinR*az_ned;
+        double az_body = (sinY*sinR + cosY*sinP*cosR)*ax_ned + (-cosY*sinR + sinY*sinP*cosR)*ay_ned + cosP*cosR*az_ned;
+        
+        // G-force = body Z-axis acceleration / gravity (including gravity component)
+        // Add gravity component: in body frame, gravity contributes 9.81 * cos(pitch) * cos(roll) to Z
+        double gravityZ_body = 9.81 * cosP * cosR;
+        gForce = (float)((az_body + gravityZ_body) / 9.81);
+        
+        lastVx = engineState.Vx;
+        lastVy = engineState.Vy; 
+        lastVz = engineState.Vz;
+        lastTime = currentTime;
+    }
+    
+    DrawRectangle(gX, gY, gWidth, gHeight, Fade(BLACK, 0.85f));
+    DrawRectangleLines(gX, gY, gWidth, gHeight, WHITE);
+    
+    // G-force scale marks (-3G to +6G typical aircraft range)
+    for (float g = -2.0f; g <= 5.0f; g += 1.0f) {
+        if (g == 0) continue;
+        float xPos = (gX + gWidth/2) + (g / 7.0f) * (gWidth * 0.8f);
+        if (xPos >= gX + 5 && xPos <= gX + gWidth - 5) {
+            DrawLine((int)xPos, gY + gHeight - 8, (int)xPos, gY + gHeight - 3, WHITE);
+            sprintf(instText, "%.0f", g);
+            int textW = MeasureText(instText, 6);
+            DrawText(instText, (int)(xPos - textW/2), gY + 3, 6, WHITE);
+        }
+    }
+    
+    // Current G-force pointer
+    float gClamped = fmin(fmax(-gForce, -3.0f), 6.0f);
+    float gPointerX = (gX + gWidth/2) + (gClamped / 7.0f) * (gWidth * 0.8f);
+    DrawTriangle({gPointerX, (float)(gY + gHeight - 3)}, 
+                {gPointerX - 3.0f, (float)(gY + gHeight + 3)},
+                {gPointerX + 3.0f, (float)(gY + gHeight + 3)}, 
+                (-gForce > 4.0f || -gForce < -1.0f) ? RED : GREEN);
+    
+    // G-force digital readout
+    sprintf(instText, "%.1fG", -gForce);
+    Color gColor = (-gForce > 4.0f || -gForce < -1.0f) ? RED : 
+                   (-gForce > 2.5f || -gForce < 0.5f) ? YELLOW : GREEN;
+    int gTextWidth = MeasureText(instText, 8);
+    DrawText(instText, gX + gWidth/2 - gTextWidth/2, gY + gHeight/2 - 4, 8, gColor);
+    DrawText("G-FORCE", gX + 15, gY + gHeight + 5, 8, WHITE);
+    
+    // Instrument label
+    DrawText("ATTITUDE", centerX - 35, centerY + radius + 10, 12, WHITE);
+    
+    // Current attitude values (digital display)
+    char attText[64];
+    sprintf(attText, "R:%+.0f° P:%+.0f°", rollDeg, pitchDeg);
+    
+    // Color code for extreme attitudes
+    Color attTextColor = WHITE;
+    if (fabsf(pitchDeg) > 75.0f) {
+        attTextColor = RED; // Extreme pitch warning
+    } else if (fabsf(rollDeg) > 60.0f) {
+        attTextColor = YELLOW; // High bank angle warning
+    }
+    
+    DrawText(attText, centerX - 45, centerY + radius + 25, 10, attTextColor);
+    
+    // Extreme attitude warning
+    if (fabsf(pitchDeg) > 80.0f) {
+        DrawText("EXTREME PITCH", centerX - 50, centerY + radius + 40, 10, RED);
     }
 }
 

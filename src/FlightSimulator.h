@@ -63,6 +63,7 @@ private:
     // Visualization methods
     void drawAircraft();
     void drawFlightPath();
+    void drawEnvironment();
     void drawInstruments();
     void drawHUD();
     void drawFlightPathMarker();
