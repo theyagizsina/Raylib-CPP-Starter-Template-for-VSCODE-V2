@@ -1,27 +1,27 @@
 #include <raylib.h>
-#include "ball.h"
+#include "FlightSimulator.h"
 
-int main() 
+int main()
 {
-    const Color darkGreen = {20, 160, 133, 255};
-    
-    constexpr int screenWidth = 800;
-    constexpr int screenHeight = 600;
-    
-    Ball ball;
-    
-    InitWindow(screenWidth, screenHeight, "My first RAYLIB program!");
+    constexpr int screenWidth = 1200;
+    constexpr int screenHeight = 800;
+
+    InitWindow(screenWidth, screenHeight, "OpenFlightLab - Raylib Flight Simulator");
     SetTargetFPS(60);
-    
+
+    FlightSimulator simulator;
+
+    if (!simulator.initialize()) {
+        CloseWindow();
+        return -1;
+    }
+
     while (!WindowShouldClose())
     {
-        ball.Update();
-        
-        BeginDrawing();
-            ClearBackground(darkGreen);
-            ball.Draw();
-        EndDrawing();
+        simulator.update();
+        simulator.draw();
     }
-    
+
     CloseWindow();
+    return 0;
 }

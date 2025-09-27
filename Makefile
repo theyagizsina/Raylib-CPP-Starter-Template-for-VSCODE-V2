@@ -208,7 +208,7 @@ ifeq ($(PLATFORM),PLATFORM_DESKTOP)
     ifeq ($(PLATFORM_OS),WINDOWS)
         # resource file contains windows executable icon and properties
         # -Wl,--subsystem,windows hides the console window
-        CFLAGS += $(RAYLIB_PATH)/src/raylib.rc.data
+        # CFLAGS += $(RAYLIB_PATH)/src/raylib.rc.data
     endif
     ifeq ($(PLATFORM_OS),LINUX)
         ifeq ($(RAYLIB_LIBTYPE),STATIC)
@@ -367,10 +367,21 @@ rwildcard=$(foreach d,$(wildcard $1*),$(call rwildcard,$d/,$2) $(filter $(subst 
 SRC_DIR = src
 OBJ_DIR = obj
 
-# Define all object files from source files
-SRC = $(call rwildcard, *.c, *.h)
-#OBJS = $(SRC:$(SRC_DIR)/%.c=$(OBJ_DIR)/%.o)
-OBJS ?= main.c
+# Define all source files including OpenFlightLab modules
+FLIGHTSIM_SOURCES = $(wildcard $(SRC_DIR)/flightsim/core/*.cpp) \
+                   $(wildcard $(SRC_DIR)/flightsim/physics/*.cpp) \
+                   $(wildcard $(SRC_DIR)/flightsim/io/*.cpp) \
+                   $(wildcard $(SRC_DIR)/flightsim/ofm/*.cpp) \
+                   $(wildcard $(SRC_DIR)/flightsim/*.cpp)
+
+# Define main source files
+MAIN_SOURCES = $(wildcard $(SRC_DIR)/*.cpp)
+
+# Combine all sources
+ALL_SOURCES = $(MAIN_SOURCES) $(FLIGHTSIM_SOURCES)
+
+# Convert to object file names
+OBJS = $(ALL_SOURCES:.cpp=.o)
 
 # For Android platform we call a custom Makefile.Android
 ifeq ($(PLATFORM),PLATFORM_ANDROID)
@@ -392,7 +403,9 @@ $(PROJECT_NAME): $(OBJS)
 
 # Compile source files
 # NOTE: This pattern will compile every module defined on $(OBJS)
-#%.o: %.c
+%.o: %.cpp
+	$(CC) -c $< -o $@ $(CFLAGS) $(INCLUDE_PATHS) -D$(PLATFORM)
+
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c
 	$(CC) -c $< -o $@ $(CFLAGS) $(INCLUDE_PATHS) -D$(PLATFORM)
 
