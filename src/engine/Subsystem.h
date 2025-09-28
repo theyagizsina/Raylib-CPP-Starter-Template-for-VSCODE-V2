@@ -6,9 +6,11 @@ namespace engine {
 
 class Engine;
 struct EngineTime;
+class EventBus;
 
 struct EngineContext {
     Engine& engine;
+    EventBus& eventBus;
 };
 
 class ISubsystem {

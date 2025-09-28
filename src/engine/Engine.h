@@ -6,6 +6,7 @@
 
 #include "EngineConfig.h"
 #include "EngineTime.h"
+#include "EventBus.h"
 #include "Subsystem.h"
 
 namespace engine {
@@ -26,6 +27,8 @@ public:
     void tick(double overrideDeltaTime = -1.0);
 
     const EngineTime& getTime() const { return time; }
+    EventBus& getEventBus() { return eventBus; }
+    const EventBus& getEventBus() const { return eventBus; }
 
     void synchronizeClock();
 
@@ -34,6 +37,7 @@ private:
 
     EngineConfig config;
     EngineTime time;
+    EventBus eventBus;
     std::vector<std::unique_ptr<ISubsystem>> subsystems;
     EngineContext context;
 

@@ -37,6 +37,10 @@ FlightSimulator::FlightSimulator()
 
 FlightSimulator::~FlightSimulator()
 {
+    if (simulationStepHandle.valid()) {
+        coreEngine.getEventBus().unsubscribe(simulationStepHandle);
+    }
+
     coreEngine.shutdown();
 
     if (hasCustomModel) {
@@ -84,6 +88,12 @@ bool FlightSimulator::initialize()
     }
 
     coreEngine.start();
+
+    simulationStepHandle = coreEngine.getEventBus().subscribe<flightsim::SimulationFixedStepEvent>(
+        [this](const flightsim::SimulationFixedStepEvent& evt) { onSimulationFixedStep(evt); });
+    lastFixedStepDelta = engineState.dt;
+    lastSimulationTimeEvent = 0.0;
+    hasSimulationEventData = false;
 
     // Setup 3D camera with automatic FOV calculation
     camera.position = (Vector3){ 100.0f, 50.0f, 100.0f };
@@ -172,21 +182,68 @@ void FlightSimulator::update()
     coreEngine.tick(deltaTime);
     
     updateCameraSystem();
-    updateFlightData();
-
-    // Add current position to flight path
-    flightPath.push_back((Vector3){ (float)engineState.X, (float)(-engineState.Z), (float)engineState.Y });
-
-    // Limit flight path length
-    if (flightPath.size() > 1000) {
-        flightPath.erase(flightPath.begin());
-    }
 
     // Stop simulation if aircraft hits ground
     if (engineState.Z >= 0.0) {
         isSimulationRunning = false;
         coreEngine.synchronizeClock();
         std::cout << "Ground contact. Simulation stopped." << std::endl;
+    }
+}
+
+void FlightSimulator::onSimulationFixedStep(const flightsim::SimulationFixedStepEvent& evt)
+{
+    const double previousAltitude = lastAltitude;
+    const double previousSimulationTime = lastSimulationTimeEvent;
+
+    const double altitude = -evt.stateSnapshot.Z;
+    double deltaSimTime = evt.simulationTime - previousSimulationTime;
+    if (deltaSimTime <= 1e-9) {
+        deltaSimTime = evt.fixedDeltaTime;
+    }
+
+    if (hasSimulationEventData) {
+        if (deltaSimTime > 1e-9) {
+            currentClimbRate = (altitude - previousAltitude) / deltaSimTime;
+        } else {
+            currentClimbRate = 0.0;
+        }
+    } else {
+        currentClimbRate = 0.0;
+        hasSimulationEventData = true;
+    }
+
+    lastAltitude = altitude;
+    lastFixedStepDelta = evt.fixedDeltaTime;
+    lastSimulationTimeEvent = evt.simulationTime;
+
+    const double u = bodyState.u;
+    const double v = bodyState.v;
+    const double w = bodyState.w;
+    currentAirspeed = std::sqrt(u * u + v * v + w * w);
+
+    if (currentAirspeed > 1e-6) {
+        currentAoA = std::atan2(w, u);
+        double betaArg = v / currentAirspeed;
+        if (betaArg > 1.0) {
+            betaArg = 1.0;
+        } else if (betaArg < -1.0) {
+            betaArg = -1.0;
+        }
+        currentBeta = std::asin(betaArg);
+    } else {
+        currentAoA = 0.0;
+        currentBeta = 0.0;
+    }
+
+    flightPath.push_back((Vector3){
+        (float)evt.stateSnapshot.X,
+        (float)(-evt.stateSnapshot.Z),
+        (float)evt.stateSnapshot.Y
+    });
+
+    if (flightPath.size() > 1000) {
+        flightPath.erase(flightPath.begin());
     }
 }
 
@@ -210,6 +267,13 @@ void FlightSimulator::handleInput()
         flightPath.clear();
         simulationEngine.resetTime();
         lastAltitude = -engineState.Z;
+        lastSimulationTimeEvent = 0.0;
+        lastFixedStepDelta = engineState.dt;
+        hasSimulationEventData = false;
+        currentAoA = 0.0;
+        currentBeta = 0.0;
+        currentAirspeed = 0.0;
+        currentClimbRate = 0.0;
         isSimulationRunning = true;
         coreEngine.synchronizeClock();
     }
@@ -563,40 +627,46 @@ void FlightSimulator::drawHUD()
     // Left side - Primary flight data
     DrawText("FLIGHT DATA", 10, 10, 16, YELLOW);
     
-    sprintf(text, "Time: %.1fs", simulationEngine.getSimulationTime());
+    double displayedSimTime = hasSimulationEventData ? lastSimulationTimeEvent
+                                                    : simulationEngine.getSimulationTime();
+
+    sprintf(text, "Sim Time: %.1fs", displayedSimTime);
     DrawText(text, 10, 30, 18, WHITE);
 
-    sprintf(text, "Altitude: %.0fm", -engineState.Z);
+    sprintf(text, "Fixed Step: %.3f s", lastFixedStepDelta);
     DrawText(text, 10, 50, 18, WHITE);
 
-    sprintf(text, "Airspeed: %.1f m/s", currentAirspeed);
+    sprintf(text, "Altitude: %.0fm", -engineState.Z);
     DrawText(text, 10, 70, 18, WHITE);
+
+    sprintf(text, "Airspeed: %.1f m/s", currentAirspeed);
+    DrawText(text, 10, 90, 18, WHITE);
     
     sprintf(text, "Climb Rate: %.1f m/s", currentClimbRate);
-    DrawText(text, 10, 90, 18, currentClimbRate > 0 ? GREEN : (currentClimbRate < -5 ? RED : WHITE));
+    DrawText(text, 10, 110, 18, currentClimbRate > 0 ? GREEN : (currentClimbRate < -5 ? RED : WHITE));
 
     sprintf(text, "AoA: %.2f°", currentAoA * 180.0 / M_PI);
-    DrawText(text, 10, 110, 18, fabs(currentAoA) > 0.3 ? RED : WHITE);
+    DrawText(text, 10, 130, 18, fabs(currentAoA) > 0.3 ? RED : WHITE);
 
     sprintf(text, "Sideslip: %.2f°", currentBeta * 180.0 / M_PI);
-    DrawText(text, 10, 130, 18, fabs(currentBeta) > 0.1 ? YELLOW : WHITE);
+    DrawText(text, 10, 150, 18, fabs(currentBeta) > 0.1 ? YELLOW : WHITE);
     
     // Attitude data (Aviation Standard Format)
-    DrawText("ATTITUDE:", 10, 150, 14, YELLOW);
+    DrawText("ATTITUDE:", 10, 170, 14, YELLOW);
     
     sprintf(text, "Roll: %+.1f°", rollDeg);
     Color rollColor = (fabs(rollDeg) > 45.0) ? RED : (fabs(rollDeg) > 20.0) ? YELLOW : WHITE;
-    DrawText(text, 10, 170, 18, rollColor);
+    DrawText(text, 10, 190, 18, rollColor);
 
     sprintf(text, "Pitch: %+.1f°", pitchDeg);
     Color pitchColor = (fabs(pitchDeg) > 30.0) ? RED : (fabs(pitchDeg) > 15.0) ? YELLOW : WHITE;
-    DrawText(text, 10, 190, 18, pitchColor);
+    DrawText(text, 10, 210, 18, pitchColor);
 
     sprintf(text, "Heading: %03.0f°", headingDeg);
-    DrawText(text, 10, 210, 18, WHITE);
+    DrawText(text, 10, 230, 18, WHITE);
     
     // Flight path data
-    DrawText("FLIGHT PATH:", 10, 230, 14, YELLOW);
+    DrawText("FLIGHT PATH:", 10, 250, 14, YELLOW);
     
     // Calculate ground speed and track
     double groundSpeed = sqrt(engineState.Vx * engineState.Vx + engineState.Vy * engineState.Vy);
@@ -604,23 +674,23 @@ void FlightSimulator::drawHUD()
     if (track < 0) track += 360.0;
     
     sprintf(text, "Ground Speed: %.1f m/s", groundSpeed);
-    DrawText(text, 10, 250, 12, WHITE);
+    DrawText(text, 10, 270, 12, WHITE);
     
     sprintf(text, "Track: %03.0f°", track);
     Color trackColor = (fabs(track - headingDeg) > 5.0) ? YELLOW : WHITE;
-    DrawText(text, 10, 265, 12, trackColor);
+    DrawText(text, 10, 285, 12, trackColor);
 
     // Controls
-    DrawText("FLIGHT CONTROLS:", 10, 285, 14, YELLOW);
-    DrawText("W/S - Elevator (W=Down, S=Up)", 10, 305, 12, WHITE);
-    DrawText("A/D - Aileron (A=Left, D=Right)", 10, 320, 12, WHITE);
-    DrawText("Q/E - Rudder (Yaw)", 10, 335, 12, WHITE);
-    DrawText("Shift/Ctrl - Throttle", 10, 350, 12, WHITE);
+    DrawText("FLIGHT CONTROLS:", 10, 305, 14, YELLOW);
+    DrawText("W/S - Elevator (W=Down, S=Up)", 10, 325, 12, WHITE);
+    DrawText("A/D - Aileron (A=Left, D=Right)", 10, 340, 12, WHITE);
+    DrawText("Q/E - Rudder (Yaw)", 10, 355, 12, WHITE);
+    DrawText("Shift/Ctrl - Throttle", 10, 370, 12, WHITE);
     
-    DrawText("CAMERA CONTROLS:", 10, 370, 14, YELLOW);
-    DrawText("SPACE - Pause/Resume", 10, 390, 12, WHITE);
-    DrawText("R - Reset Simulation", 10, 405, 12, WHITE);
-    DrawText("C - Switch Camera", 10, 420, 12, WHITE);
+    DrawText("CAMERA CONTROLS:", 10, 390, 14, YELLOW);
+    DrawText("SPACE - Pause/Resume", 10, 410, 12, WHITE);
+    DrawText("R - Reset Simulation", 10, 425, 12, WHITE);
+    DrawText("C - Switch Camera", 10, 440, 12, WHITE);
     DrawText("H - Head Look On/Off (Cockpit)", 10, 435, 12, WHITE);
     DrawText("F - Center Head (Cockpit)", 10, 450, 12, WHITE);
     DrawText("G - Reset FOV (Cockpit)", 10, 465, 12, WHITE);
@@ -870,26 +940,6 @@ void FlightSimulator::updateCameraSystem()
         camera.target = aircraftPos;
         camera.up = (Vector3){ 0.0f, 1.0f, 0.0f };
     }
-}
-
-void FlightSimulator::updateFlightData()
-{
-    // Calculate current airspeed
-    currentAirspeed = sqrt(bodyState.u * bodyState.u + bodyState.v * bodyState.v + bodyState.w * bodyState.w);
-    
-    // Calculate angle of attack and sideslip
-    if (currentAirspeed > 1e-6) {
-        currentAoA = atan2(bodyState.w, bodyState.u);
-        currentBeta = asin(bodyState.v / currentAirspeed);
-    } else {
-        currentAoA = 0.0;
-        currentBeta = 0.0;
-    }
-    
-    // Calculate climb rate
-    double currentAltitude = -engineState.Z;
-    currentClimbRate = (currentAltitude - lastAltitude) / GetFrameTime();
-    lastAltitude = currentAltitude;
 }
 
 void FlightSimulator::drawFlightPathMarker()
@@ -1647,12 +1697,6 @@ void FlightSimulator::drawForceVectors()
             DrawLine3D(forceEnd, arrow3, force.color);
             DrawLine3D(forceEnd, arrow4, force.color);
             
-            // Draw force magnitude text (if labels enabled)
-            if (forceViz.showLabels) {
-                float magnitude = sqrtf(force.force.x * force.force.x + force.force.y * force.force.y + force.force.z * force.force.z);
-                // Note: 3D text positioning is complex - this would need camera projection
-                // For now, we'll show this info in the HUD instead
-            }
         }
     }
     

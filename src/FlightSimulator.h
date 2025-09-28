@@ -15,6 +15,7 @@
 #include <memory>
 
 #include "engine/Engine.h"
+#include "flightsim/core/SimulationEvents.h"
 
 class FlightSimulationSubsystem;
 
@@ -123,6 +124,10 @@ private:
 
     engine::Engine coreEngine;
     FlightSimulationSubsystem* simulationSubsystem = nullptr;
+    engine::EventBus::ListenerHandle simulationStepHandle;
+    double lastFixedStepDelta = 0.0;
+    double lastSimulationTimeEvent = 0.0;
+    bool hasSimulationEventData = false;
     
     // Force vector visualization system
     struct ForceVector {
@@ -174,8 +179,8 @@ private:
     void drawFlightPathMarker();
     void drawAttitudeIndicator();
     void updateCameraSystem();
-    void updateFlightData();
     void updateControls();
+    void onSimulationFixedStep(const flightsim::SimulationFixedStepEvent& evt);
 
     void handleForceSample(const SimulationEngine::ForceVectorSample& sample);
     void handleMomentSample(const SimulationEngine::MomentVectorSample& sample);

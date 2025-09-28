@@ -21,6 +21,7 @@ set(PROJECT_SOURCES
     "${SRC_DIR}/ball.cpp"
     "${SRC_DIR}/FlightSimulator.cpp"
     "${SRC_DIR}/engine/Engine.cpp"
+    "${SRC_DIR}/engine/EventBus.cpp"
     "${SRC_DIR}/flightsim/Application.cpp"
     "${SRC_DIR}/flightsim/core/EngineState.cpp"
     "${SRC_DIR}/flightsim/core/FlightSimulationSubsystem.cpp"

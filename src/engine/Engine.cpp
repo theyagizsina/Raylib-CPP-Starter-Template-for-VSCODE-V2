@@ -7,7 +7,7 @@
 namespace engine {
 
 Engine::Engine()
-    : context{*this},
+    : context{*this, eventBus},
       hasLastTick(false),
       accumulator(0.0),
       initialized(false),
@@ -77,6 +77,7 @@ void Engine::shutdown()
     accumulator = 0.0;
     time = EngineTime{};
     time.fixedTimeStep = config.fixedTimeStep;
+    eventBus.clear();
 }
 
 void Engine::registerSubsystem(std::unique_ptr<ISubsystem> subsystem)
@@ -115,6 +116,8 @@ void Engine::tick(double overrideDeltaTime)
     for (auto& subsystem : subsystems) {
         subsystem->onUpdate(context, deltaTime);
     }
+
+    eventBus.pump();
 }
 
 void Engine::synchronizeClock()
