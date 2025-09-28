@@ -9,9 +9,9 @@
 #endif
 
 FlightSimulator::FlightSimulator() : isSimulationRunning(false), simulationTime(0.0),
+    aircraftModelBaseTransform(MatrixIdentity()), customModelScale(1.0f), hasCustomModel(false),
     cameraMode(FLIGHT_CAMERA_EXTERNAL), cameraDistance(150.0f), cameraYaw(0.0f), cameraPitch(-20.0f),
-    activeGamepadIndex(-1), lastGamepadRoll(0.0f), lastGamepadPitch(0.0f),
-    lastGamepadAxisCount(0), aircraftModelBaseTransform(MatrixIdentity()), customModelScale(1.0f), hasCustomModel(false),
+    activeGamepadIndex(-1), lastGamepadAxisCount(0), lastGamepadRoll(0.0f), lastGamepadPitch(0.0f),
     currentAoA(0.0), currentBeta(0.0), currentAirspeed(0.0), currentClimbRate(0.0), lastAltitude(0.0)
 {
     mouseLastPos = { 0, 0 };
@@ -55,12 +55,15 @@ bool FlightSimulator::initialize()
 
     initializeBodyState();
 
-    // Setup 3D camera
+    // Setup 3D camera with automatic FOV calculation
     camera.position = (Vector3){ 100.0f, 50.0f, 100.0f };
     camera.target = (Vector3){ 0.0f, 0.0f, 0.0f };
     camera.up = (Vector3){ 0.0f, 1.0f, 0.0f };
-    camera.fovy = 45.0f;
+    camera.fovy = fovConfig.calculateVerticalFOV(); // Use calculated FOV
     camera.projection = CAMERA_PERSPECTIVE;
+    
+    // Initialize cockpit FOV to calculated value
+    fovConfig.cockpitFOV = fovConfig.calculateVerticalFOV();
     
     // Initialize camera system
     cameraMode = FLIGHT_CAMERA_EXTERNAL;
@@ -108,7 +111,7 @@ void FlightSimulator::setDefaultConfiguration()
 {
     // Default configuration for easy testing
     engineState.X = 0; engineState.Y = 0; engineState.Z = -10000; // Start at 1000m altitude
-    engineState.Vx = 200; engineState.Vy = 0; engineState.Vz = 0; // 50 m/s forward
+    engineState.Vx = 80; engineState.Vy = 0; engineState.Vz = 0; // 50 m/s forward
 
     // Level flight attitude (no initial roll angle)
     engineState.q.w = 1; engineState.q.x = 0; engineState.q.y = 0; engineState.q.z = 0;
@@ -118,10 +121,10 @@ void FlightSimulator::setDefaultConfiguration()
     engineState.q_ = 0;  // No pitch moment
     engineState.r = 0;   // No yaw moment
     
-    engineState.mass = 1000; // 1000 kg aircraft
-    engineState.cmX = 0; engineState.cmY = 0; engineState.cmZ = 0;
-    engineState.moiX = 5000; engineState.moiY = 8000; engineState.moiZ = 12000;
-    engineState.windX = 0; engineState.windY = 10; engineState.windZ = 0;
+    engineState.mass = 3266; // 1000 kg aircraft
+    engineState.cmX = 0.213941; engineState.cmY = 0; engineState.cmZ = 0.090697;
+    engineState.moiX = 1438; engineState.moiY = 25874; engineState.moiZ = 26779;
+    engineState.windX = 0; engineState.windY = 0; engineState.windZ = 0;
     engineState.dt = 0.016; // 60 FPS
     engineState.integratorType = 1; // RK4
     engineState.subSteps = 1;
@@ -150,12 +153,12 @@ void FlightSimulator::update()
 
     handleInput();
     updateControls();
-    updateCameraSystem();
-
+    
     double deltaTime = GetFrameTime();
     simulationStep(deltaTime);
     simulationTime += deltaTime;
     
+    updateCameraSystem();
     updateFlightData();
 
     // Add current position to flight path
@@ -240,11 +243,34 @@ void FlightSimulator::simulationStep(double deltaTime)
 void FlightSimulator::calculateAeroForces(double& FxB, double& FyB, double& FzB,
                                         double& MxB, double& MyB, double& MzB)
 {
+    // Clear previous force visualization data
+    forceViz.clear();
+    
+    // Add gravitational force visualization (always present)
+    Vector3 gravityForce = {0.0f, (float)(engineState.mass * 9.81), 0.0f}; // NED frame
+    forceViz.addForce({0.0f, 0.0f, 0.0f}, gravityForce, BLUE, "Gravity");
+    
     while (true) {
         double fx = 0, fy = 0, fz = 0, px = 0, py = 0, pz = 0;
         bool ok = ofmInterface.addLocalForceComponent(fx, fy, fz, px, py, pz);
         if (!ok) break;
         FxB += fx; FyB += fy; FzB += fz;
+
+        // Add force vector to visualization
+        Vector3 forceVec = {(float)fx, (float)fy, (float)fz};
+        Vector3 forcePos = {(float)px, (float)py, (float)pz};
+        
+        // Color code forces by magnitude and type
+        Color forceColor = RED;
+        std::string forceLabel = "Aero Force";
+        
+        float forceMag = sqrtf(fx*fx + fy*fy + fz*fz);
+        if (forceMag > 1000.0f) forceColor = RED;        // High force - red
+        else if (forceMag > 500.0f) forceColor = ORANGE; // Medium force - orange  
+        else if (forceMag > 100.0f) forceColor = YELLOW; // Low force - yellow
+        else forceColor = GREEN;                         // Very low force - green
+        
+        forceViz.addForce(forcePos, forceVec, forceColor, forceLabel);
 
         double rx = px - engineState.cmX;
         double ry = py - engineState.cmY;
@@ -253,6 +279,13 @@ void FlightSimulator::calculateAeroForces(double& FxB, double& FyB, double& FzB,
         double My_ = rz * fx - rx * fz;
         double Mz_ = rx * fy - ry * fx;
         MxB += Mx_; MyB += My_; MzB += Mz_;
+        
+        // Add moment vectors from force application
+        if (fabsf(Mx_) > 1.0 || fabsf(My_) > 1.0 || fabsf(Mz_) > 1.0) {
+            Vector3 momentVec = {(float)Mx_, (float)My_, (float)Mz_};
+            forceViz.addMoment({(float)engineState.cmX, (float)engineState.cmY, (float)engineState.cmZ}, 
+                              momentVec, PURPLE, "Force Moment");
+        }
     }
 
     while (true) {
@@ -260,6 +293,27 @@ void FlightSimulator::calculateAeroForces(double& FxB, double& FyB, double& FzB,
         bool ok = ofmInterface.addLocalMomentComponent(mx, my, mz);
         if (!ok) break;
         MxB += mx; MyB += my; MzB += mz;
+        
+        // Add direct moment vectors to visualization
+        Vector3 momentVec = {(float)mx, (float)my, (float)mz};
+        
+        // Color code moments by axis
+        Color momentColor = MAGENTA;
+        std::string momentLabel = "Direct Moment";
+        
+        if (fabsf(mx) > fabsf(my) && fabsf(mx) > fabsf(mz)) {
+            momentColor = RED;    // Roll moment - red
+            momentLabel = "Roll Moment";
+        } else if (fabsf(my) > fabsf(mz)) {
+            momentColor = GREEN;  // Pitch moment - green
+            momentLabel = "Pitch Moment";
+        } else {
+            momentColor = BLUE;   // Yaw moment - blue
+            momentLabel = "Yaw Moment";
+        }
+        
+        forceViz.addMoment({(float)engineState.cmX, (float)engineState.cmY, (float)engineState.cmZ}, 
+                          momentVec, momentColor, momentLabel);
     }
 }
 
@@ -353,6 +407,75 @@ void FlightSimulator::handleInput()
         cameraMode = (cameraMode == FLIGHT_CAMERA_EXTERNAL) ? FLIGHT_CAMERA_COCKPIT : FLIGHT_CAMERA_EXTERNAL;
     }
     
+    // Toggle head look mode in cockpit (H key)
+    if (IsKeyPressed(KEY_H) && cameraMode == FLIGHT_CAMERA_COCKPIT) {
+        mouseHeadLookEnabled = !mouseHeadLookEnabled;
+        if (mouseHeadLookEnabled) {
+            SetMouseCursor(MOUSE_CURSOR_CROSSHAIR);
+        } else {
+            SetMouseCursor(MOUSE_CURSOR_DEFAULT);
+        }
+    }
+    
+    // Head look controls for cockpit view
+    if (cameraMode == FLIGHT_CAMERA_COCKPIT && mouseHeadLookEnabled && IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+        Vector2 mousePos = GetMousePosition();
+        Vector2 mouseDelta = { mousePos.x - mouseLastPos.x, mousePos.y - mouseLastPos.y };
+        
+        // Update target head orientation with mouse movement
+        headLook.targetYaw += mouseDelta.x * headLook.sensitivity;
+        headLook.targetPitch += mouseDelta.y * headLook.sensitivity;
+        
+        // Clamp head movement limits
+        if (headLook.targetYaw > 90.0f) headLook.targetYaw = 90.0f;
+        if (headLook.targetYaw < -90.0f) headLook.targetYaw = -90.0f;
+        if (headLook.targetPitch > 85.0f) headLook.targetPitch = 85.0f;
+        if (headLook.targetPitch < -85.0f) headLook.targetPitch = -85.0f;
+    }
+    
+    // Smoothly interpolate head look to target (always active for smooth return-to-center)
+    headLook.yaw = headLook.yaw * headLook.smoothing + headLook.targetYaw * (1.0f - headLook.smoothing);
+    headLook.pitch = headLook.pitch * headLook.smoothing + headLook.targetPitch * (1.0f - headLook.smoothing);
+    
+    // Return head to center when not actively looking around (F key while in cockpit)
+    if (IsKeyPressed(KEY_F) && cameraMode == FLIGHT_CAMERA_COCKPIT) {
+        headLook.targetYaw = 0.0f;
+        headLook.targetPitch = 0.0f;
+    }
+    
+    // Reset FOV to default (G key while in cockpit)
+    if (IsKeyPressed(KEY_G) && cameraMode == FLIGHT_CAMERA_COCKPIT) {
+        fovConfig.resetCockpitFOV();
+    }
+    
+    // Force visualization controls
+    if (IsKeyPressed(KEY_V)) {
+        forceViz.showForces = !forceViz.showForces;
+    }
+    
+    if (IsKeyPressed(KEY_B)) {
+        forceViz.showMoments = !forceViz.showMoments;
+    }
+    
+    if (IsKeyPressed(KEY_N)) {
+        forceViz.showLabels = !forceViz.showLabels;
+    }
+    
+    // Adjust force visualization scale with +/- keys
+    if (IsKeyPressed(KEY_KP_ADD) || IsKeyPressed(KEY_EQUAL)) {
+        forceViz.forceScale *= 1.5f;
+        forceViz.momentScale *= 1.5f;
+    }
+    
+    if (IsKeyPressed(KEY_KP_SUBTRACT) || IsKeyPressed(KEY_MINUS)) {
+        forceViz.forceScale /= 1.5f;
+        forceViz.momentScale /= 1.5f;
+        
+        // Prevent scale from becoming too small
+        if (forceViz.forceScale < 0.001f) forceViz.forceScale = 0.001f;
+        if (forceViz.momentScale < 0.001f) forceViz.momentScale = 0.001f;
+    }
+    
     // Mouse camera control for external view
     if (cameraMode == FLIGHT_CAMERA_EXTERNAL && IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
         Vector2 mousePos = GetMousePosition();
@@ -368,7 +491,15 @@ void FlightSimulator::handleInput()
     
     mouseLastPos = GetMousePosition();
     
-    // Mouse wheel for distance
+    // Mouse wheel FOV control for cockpit camera
+    if (cameraMode == FLIGHT_CAMERA_COCKPIT) {
+        float wheelMove = GetMouseWheelMove();
+        if (wheelMove != 0.0f) {
+            fovConfig.adjustCockpitFOV(wheelMove);
+        }
+    }
+    
+    // Mouse wheel for distance control in external view
     if (cameraMode == FLIGHT_CAMERA_EXTERNAL) {
         float wheel = GetMouseWheelMove();
         cameraDistance -= wheel * 20.0f;
@@ -394,6 +525,9 @@ void FlightSimulator::draw()
 
     // Draw flight path
     drawFlightPath();
+    
+    // Draw force vectors if enabled
+    drawForceVectors();
 
     EndMode3D();
 
@@ -627,22 +761,46 @@ void FlightSimulator::drawHUD()
 
     sprintf(text, "Heading: %03.0f°", headingDeg);
     DrawText(text, 10, 210, 18, WHITE);
+    
+    // Flight path data
+    DrawText("FLIGHT PATH:", 10, 230, 14, YELLOW);
+    
+    // Calculate ground speed and track
+    double groundSpeed = sqrt(engineState.Vx * engineState.Vx + engineState.Vy * engineState.Vy);
+    double track = atan2(engineState.Vy, engineState.Vx) * 180.0 / M_PI;
+    if (track < 0) track += 360.0;
+    
+    sprintf(text, "Ground Speed: %.1f m/s", groundSpeed);
+    DrawText(text, 10, 250, 12, WHITE);
+    
+    sprintf(text, "Track: %03.0f°", track);
+    Color trackColor = (fabs(track - headingDeg) > 5.0) ? YELLOW : WHITE;
+    DrawText(text, 10, 265, 12, trackColor);
 
     // Controls
-    DrawText("FLIGHT CONTROLS:", 10, 250, 14, YELLOW);
-    DrawText("W/S - Elevator (W=Down, S=Up)", 10, 270, 12, WHITE);
-    DrawText("A/D - Aileron (A=Left, D=Right)", 10, 285, 12, WHITE);
-    DrawText("Q/E - Rudder (Yaw)", 10, 300, 12, WHITE);
-    DrawText("Shift/Ctrl - Throttle", 10, 315, 12, WHITE);
+    DrawText("FLIGHT CONTROLS:", 10, 285, 14, YELLOW);
+    DrawText("W/S - Elevator (W=Down, S=Up)", 10, 305, 12, WHITE);
+    DrawText("A/D - Aileron (A=Left, D=Right)", 10, 320, 12, WHITE);
+    DrawText("Q/E - Rudder (Yaw)", 10, 335, 12, WHITE);
+    DrawText("Shift/Ctrl - Throttle", 10, 350, 12, WHITE);
     
-    DrawText("CAMERA CONTROLS:", 10, 340, 14, YELLOW);
-    DrawText("SPACE - Pause/Resume", 10, 360, 12, WHITE);
-    DrawText("R - Reset Simulation", 10, 375, 12, WHITE);
-    DrawText("C - Switch Camera", 10, 390, 12, WHITE);
-    DrawText("Left Click+Drag - Camera", 10, 405, 12, WHITE);
-    DrawText("Mouse Wheel - Zoom", 10, 420, 12, WHITE);
-    DrawText("L - Load Aircraft Model", 10, 435, 12, WHITE);
-    DrawText("M - Toggle Model Display", 10, 450, 12, WHITE);
+    DrawText("CAMERA CONTROLS:", 10, 370, 14, YELLOW);
+    DrawText("SPACE - Pause/Resume", 10, 390, 12, WHITE);
+    DrawText("R - Reset Simulation", 10, 405, 12, WHITE);
+    DrawText("C - Switch Camera", 10, 420, 12, WHITE);
+    DrawText("H - Head Look On/Off (Cockpit)", 10, 435, 12, WHITE);
+    DrawText("F - Center Head (Cockpit)", 10, 450, 12, WHITE);
+    DrawText("G - Reset FOV (Cockpit)", 10, 465, 12, WHITE);
+    DrawText("Left Click+Drag - Camera/Head", 10, 480, 12, WHITE);
+    DrawText("Mouse Wheel - Zoom/FOV", 10, 495, 12, WHITE);
+    DrawText("L - Load Aircraft Model", 10, 510, 12, WHITE);
+    DrawText("M - Toggle Model Display", 10, 525, 12, WHITE);
+    
+    DrawText("FORCE VISUALIZATION:", 10, 545, 14, YELLOW);
+    DrawText("V - Toggle Forces", 10, 565, 12, forceViz.showForces ? GREEN : WHITE);
+    DrawText("B - Toggle Moments", 10, 580, 12, forceViz.showMoments ? GREEN : WHITE);
+    DrawText("N - Toggle Labels", 10, 595, 12, forceViz.showLabels ? GREEN : WHITE);
+    DrawText("+/- - Scale Vectors", 10, 610, 12, WHITE);
     
     // Control status display (right side)
     DrawText("CONTROL STATUS:", GetScreenWidth() - 200, 50, 14, YELLOW);
@@ -685,9 +843,74 @@ void FlightSimulator::drawHUD()
         DrawText("Gamepad: Not detected", GetScreenWidth() - 200, 135, 12, RED);
     }
     
-    // Camera mode indicator
-    sprintf(text, "Camera: %s", cameraMode == FLIGHT_CAMERA_COCKPIT ? "COCKPIT" : "EXTERNAL");
-    DrawText(text, GetScreenWidth() - 200, 10, 16, YELLOW);
+    // Force visualization status and info
+    int forceInfoY = 200;
+    DrawText("FORCE VISUALIZATION:", GetScreenWidth() - 200, forceInfoY, 14, YELLOW);
+    
+    sprintf(text, "Forces: %s (%d)", forceViz.showForces ? "ON" : "OFF", (int)forceViz.forces.size());
+    DrawText(text, GetScreenWidth() - 200, forceInfoY + 20, 12, forceViz.showForces ? GREEN : WHITE);
+    
+    sprintf(text, "Moments: %s (%d)", forceViz.showMoments ? "ON" : "OFF", (int)forceViz.moments.size());
+    DrawText(text, GetScreenWidth() - 200, forceInfoY + 35, 12, forceViz.showMoments ? GREEN : WHITE);
+    
+    sprintf(text, "Force Scale: %.4f", forceViz.forceScale);
+    DrawText(text, GetScreenWidth() - 200, forceInfoY + 50, 12, WHITE);
+    
+    sprintf(text, "Moment Scale: %.4f", forceViz.momentScale);
+    DrawText(text, GetScreenWidth() - 200, forceInfoY + 65, 12, WHITE);
+    
+    // Show force magnitudes if forces are visible
+    if (forceViz.showForces && !forceViz.forces.empty()) {
+        DrawText("FORCE MAGNITUDES:", GetScreenWidth() - 200, forceInfoY + 85, 12, YELLOW);
+        int lineY = forceInfoY + 100;
+        
+        for (size_t i = 0; i < forceViz.forces.size() && i < 5; i++) { // Show max 5 forces
+            const auto& force = forceViz.forces[i];
+            float magnitude = sqrtf(force.force.x * force.force.x + force.force.y * force.force.y + force.force.z * force.force.z);
+            sprintf(text, "%s: %.1fN", force.label.c_str(), magnitude);
+            DrawText(text, GetScreenWidth() - 200, lineY, 10, force.color);
+            lineY += 12;
+        }
+    }
+    
+    // Show moment magnitudes if moments are visible
+    if (forceViz.showMoments && !forceViz.moments.empty()) {
+        int momentY = forceInfoY + 200;
+        DrawText("MOMENT MAGNITUDES:", GetScreenWidth() - 200, momentY, 12, YELLOW);
+        int lineY = momentY + 15;
+        
+        for (size_t i = 0; i < forceViz.moments.size() && i < 3; i++) { // Show max 3 moments
+            const auto& moment = forceViz.moments[i];
+            float magnitude = sqrtf(moment.force.x * moment.force.x + moment.force.y * moment.force.y + moment.force.z * moment.force.z);
+            sprintf(text, "%s: %.1fN·m", moment.label.c_str(), magnitude);
+            DrawText(text, GetScreenWidth() - 200, lineY, 10, moment.color);
+            lineY += 12;
+        }
+    }
+    
+    // Camera mode indicator with FOV and head tracking info
+    sprintf(text, "Camera: %s (FOV: %.1f°)", 
+            cameraMode == FLIGHT_CAMERA_COCKPIT ? "COCKPIT" : "EXTERNAL", 
+            camera.fovy);
+    DrawText(text, GetScreenWidth() - 280, 10, 16, YELLOW);
+    
+    // Head tracking status (cockpit only)
+    if (cameraMode == FLIGHT_CAMERA_COCKPIT) {
+        sprintf(text, "Head Look: %s", mouseHeadLookEnabled ? "ON" : "OFF");
+        DrawText(text, GetScreenWidth() - 280, 30, 14, mouseHeadLookEnabled ? GREEN : WHITE);
+        
+        // FOV zoom info
+        float defaultFOV = fovConfig.calculateVerticalFOV();
+        if (fabsf(fovConfig.cockpitFOV - defaultFOV) > 1.0f) {
+            sprintf(text, "FOV: %.1f° (Default: %.1f°)", fovConfig.cockpitFOV, defaultFOV);
+            DrawText(text, GetScreenWidth() - 280, 45, 12, {0, 255, 255, 255}); // Cyan color
+        }
+        
+        if (mouseHeadLookEnabled || fabsf(headLook.yaw) > 1.0f || fabsf(headLook.pitch) > 1.0f) {
+            sprintf(text, "Head: Yaw %+.1f° Pitch %+.1f°", headLook.yaw, headLook.pitch);
+            DrawText(text, GetScreenWidth() - 280, 60, 12, WHITE);
+        }
+    }
 
     if (!isSimulationRunning) {
         DrawText("SIMULATION PAUSED", GetScreenWidth()/2 - 100, GetScreenHeight()/2, 24, RED);
@@ -702,27 +925,104 @@ void FlightSimulator::updateCameraSystem()
 {
     Vector3 aircraftPos = { (float)engineState.X, (float)(-engineState.Z), (float)engineState.Y };
     
+    // Update camera FOV based on camera mode
     if (cameraMode == FLIGHT_CAMERA_COCKPIT) {
-        // Cockpit view - camera inside aircraft with exact aircraft orientation
+        camera.fovy = fovConfig.getCockpitFOV(); // Use dynamic cockpit FOV
+    } else {
+        camera.fovy = fovConfig.calculateVerticalFOV(); // Use calculated FOV for external
+    }
+    
+    if (cameraMode == FLIGHT_CAMERA_COCKPIT) {
+        // Cockpit camera with head tracking support
         double R[3][3];
         QuaternionOperations::toMatrix(engineState.q, R);
         
-        // Position camera at aircraft location (slightly forward for better view)
-        Vector3 cockpitOffset = { (float)(R[0][0] * 2.0), (float)(-R[2][0] * 2.0), (float)(R[1][0] * 2.0) };
-        camera.position = (Vector3){ aircraftPos.x + cockpitOffset.x, 
-                                     aircraftPos.y + cockpitOffset.y, 
-                                     aircraftPos.z + cockpitOffset.z };
+        // Base cockpit position relative to aircraft center (body coordinates)
+        float cockpitX = headLook.headOffset.x;  // Forward
+        float cockpitY = headLook.headOffset.y;  // Right  
+        float cockpitZ = headLook.headOffset.z;  // Down
         
-        // Forward direction in world coordinates (aircraft's nose direction)
-    Vector3 forward = { (float)R[0][0], (float)(-R[2][0]), (float)R[1][0] };
-        camera.target = (Vector3){ camera.position.x + forward.x * 100.0f, 
-                                   camera.position.y + forward.y * 100.0f, 
-                                   camera.position.z + forward.z * 100.0f };
+        // Transform base cockpit position from aircraft body frame to world frame
+        Vector3 cockpitOffset;
+        cockpitOffset.x = (float)(R[0][0] * cockpitX + R[0][1] * cockpitY + R[0][2] * cockpitZ);
+        cockpitOffset.y = (float)(-R[2][0] * cockpitX - R[2][1] * cockpitY - R[2][2] * cockpitZ);
+        cockpitOffset.z = (float)(R[1][0] * cockpitX + R[1][1] * cockpitY + R[1][2] * cockpitZ);
         
-        // Up vector in world coordinates (aircraft's up direction)
-    camera.up = (Vector3){ (float)(-R[0][2]), (float)R[2][2], (float)(-R[1][2]) };
+        // Set camera position at cockpit location
+        camera.position.x = aircraftPos.x + cockpitOffset.x;
+        camera.position.y = aircraftPos.y + cockpitOffset.y;
+        camera.position.z = aircraftPos.z + cockpitOffset.z;
+        
+        // Calculate head tracking rotation
+        // Convert head yaw/pitch to radians  
+        float headYawRad = headLook.yaw * M_PI / 180.0f;
+        float headPitchRad = headLook.pitch * M_PI / 180.0f;
+        
+        // Create head rotation matrix (yaw around aircraft Z-axis, pitch around head's side axis)
+        // Head yaw rotates around aircraft's up vector
+        // Head pitch rotates around head's side vector (perpendicular to forward and up)
+        
+        // Aircraft forward direction (body frame X-axis -> world frame)
+        Vector3 aircraftForward;
+        aircraftForward.x = (float)R[0][0];
+        aircraftForward.y = (float)(-R[2][0]);  
+        aircraftForward.z = (float)R[1][0];
+        
+        // Aircraft right direction (body frame Y-axis -> world frame)  
+        Vector3 aircraftRight;
+        aircraftRight.x = (float)R[0][1];
+        aircraftRight.y = (float)(-R[2][1]);
+        aircraftRight.z = (float)R[1][1];
+        
+        // Aircraft up direction (body frame Z-axis -> world frame, inverted)
+        Vector3 aircraftUp;
+        aircraftUp.x = (float)(-R[0][2]);
+        aircraftUp.y = (float)(R[2][2]);
+        aircraftUp.z = (float)(-R[1][2]);
+        
+        // Apply head yaw rotation around aircraft up vector
+        Vector3 headForward;
+        float cosYaw = cosf(headYawRad);
+        float sinYaw = sinf(headYawRad);
+        
+        // Rotate forward vector by head yaw around up vector
+        headForward.x = aircraftForward.x * cosYaw + aircraftRight.x * sinYaw;
+        headForward.y = aircraftForward.y * cosYaw + aircraftRight.y * sinYaw;  
+        headForward.z = aircraftForward.z * cosYaw + aircraftRight.z * sinYaw;
+        
+        // Recalculate head right vector (perpendicular to head forward and aircraft up)
+        Vector3 headRight = Vector3CrossProduct(headForward, aircraftUp);
+        headRight = Vector3Normalize(headRight);
+        
+        // Apply head pitch rotation around head right vector
+        Vector3 finalForward;
+        float cosPitch = cosf(headPitchRad);
+        float sinPitch = sinf(headPitchRad);
+        
+        // Rotate head forward by pitch around head right vector
+        Vector3 headUp = Vector3CrossProduct(headRight, headForward);
+        headUp = Vector3Normalize(headUp);
+        
+        finalForward.x = headForward.x * cosPitch + headUp.x * sinPitch;
+        finalForward.y = headForward.y * cosPitch + headUp.y * sinPitch;
+        finalForward.z = headForward.z * cosPitch + headUp.z * sinPitch;
+        
+        // Final head up vector after pitch rotation
+        Vector3 finalUp;
+        finalUp.x = -headForward.x * sinPitch + headUp.x * cosPitch;
+        finalUp.y = -headForward.y * sinPitch + headUp.y * cosPitch;
+        finalUp.z = -headForward.z * sinPitch + headUp.z * cosPitch;
+        
+        // Set target point far ahead in final look direction
+        camera.target.x = camera.position.x + finalForward.x * 1000.0f;
+        camera.target.y = camera.position.y + finalForward.y * 1000.0f;
+        camera.target.z = camera.position.z + finalForward.z * 1000.0f;
+        
+        // Set camera up vector
+        camera.up = finalUp;
+        
     } else {
-        // External view with mouse control
+        // External view with mouse control (unchanged)
         float yawRad = cameraYaw * M_PI / 180.0f;
         float pitchRad = cameraPitch * M_PI / 180.0f;
         
@@ -872,6 +1172,93 @@ void FlightSimulator::drawAttitudeIndicator()
     // Vertical reference line
     DrawLine(centerX, centerY - 8, centerX, centerY + 8, YELLOW);
     
+    // FLIGHT PATH MARKER - Shows where aircraft is actually going
+    // Calculate velocity vector in aircraft body frame
+    double R[3][3];
+    QuaternionOperations::toMatrix(engineState.q, R);
+    
+    // Transform world velocity to body frame
+    double vx_body = R[0][0] * engineState.Vx + R[1][0] * engineState.Vy + R[2][0] * engineState.Vz;
+    double vy_body = R[0][1] * engineState.Vx + R[1][1] * engineState.Vy + R[2][1] * engineState.Vz; 
+    double vz_body = R[0][2] * engineState.Vx + R[1][2] * engineState.Vy + R[2][2] * engineState.Vz;
+    
+    // Calculate flight path angles
+    double groundSpeed = sqrt(vx_body * vx_body + vy_body * vy_body + vz_body * vz_body);
+    
+    if (groundSpeed > 5.0) { // Only show if aircraft is moving
+        // Flight path angle (vertical) - angle between velocity and horizontal plane
+        // Negative vz_body means climb in body frame (Z points down)
+        double fpAngleRad = atan2(-vz_body, sqrt(vx_body * vx_body + vy_body * vy_body));
+        
+        // Track angle (horizontal) - sideslip component (right is positive)
+        double trackAngleRad = atan2(-vy_body, vx_body);
+        
+        // Convert to screen coordinates relative to attitude indicator
+        float fpAngleDeg = (float)(fpAngleRad * 180.0 / M_PI);
+        float trackAngleDeg = (float)(trackAngleRad * 180.0 / M_PI);
+        
+        // Scale flight path angles for display - INVERT vertical for screen coordinates
+        float fpScreenOffset = -fpAngleDeg * pitchPixelsPerDegree;  // Negative for correct screen mapping
+        float trackScreenOffset = trackAngleDeg * pitchPixelsPerDegree;
+        
+        // NO ROLL COMPENSATION - Simple vertical-only flight path marker
+        // Flight path marker position (fixed to screen coordinates, no roll rotation)
+        float fpMarkerX = centerX + trackScreenOffset;  // Horizontal sideslip only
+        float fpMarkerY = centerY + fpScreenOffset;     // Vertical flight path angle only
+        
+        // Only draw if within attitude indicator circle
+        float distFromCenter = sqrt((fpMarkerX - centerX) * (fpMarkerX - centerX) + (fpMarkerY - centerY) * (fpMarkerY - centerY));
+        if (distFromCenter <= radius - 5) {
+            // Draw flight path marker symbol (circle with cross)
+            Color fpColor = WHITE;
+            
+            // Flight path marker circle
+            DrawCircleLines((int)fpMarkerX, (int)fpMarkerY, 8, fpColor);
+            
+            // Cross lines (showing actual flight direction)
+            DrawLine((int)fpMarkerX - 15, (int)fpMarkerY, (int)fpMarkerX - 8, (int)fpMarkerY, fpColor);  // Left
+            DrawLine((int)fpMarkerX + 8, (int)fpMarkerY, (int)fpMarkerX + 15, (int)fpMarkerY, fpColor);   // Right
+            DrawLine((int)fpMarkerX, (int)fpMarkerY - 15, (int)fpMarkerX, (int)fpMarkerY - 8, fpColor);   // Top
+            DrawLine((int)fpMarkerX, (int)fpMarkerY + 8, (int)fpMarkerX, (int)fpMarkerY + 5, fpColor);    // Bottom (shorter)
+            
+            // Small center dot
+            DrawCircle((int)fpMarkerX, (int)fpMarkerY, 2, fpColor);
+        }
+        
+        // Draw flight path angle and track angle indicators outside the attitude indicator
+        // Flight path angle indicator (vertical scale) - left side
+        int fpaX = centerX - radius - 25;
+        int fpaY = centerY;
+        float fpaIndicatorY = fpaY - fpAngleDeg * 2.0f; // Scale for display
+        
+        // Clamp to reasonable display range
+        if (fpaIndicatorY >= centerY - radius && fpaIndicatorY <= centerY + radius) {
+            DrawLine(fpaX - 5, (int)fpaIndicatorY, fpaX + 5, (int)fpaIndicatorY, WHITE);
+            DrawLine(fpaX, (int)fpaIndicatorY - 3, fpaX, (int)fpaIndicatorY + 3, WHITE);
+            
+            // Show FPA value
+            char fpaText[16];
+            sprintf(fpaText, "%.1f°", fpAngleDeg);
+            DrawText(fpaText, fpaX - 20, (int)fpaIndicatorY - 6, 8, WHITE);
+        }
+        
+        // Track angle indicator (horizontal scale) - bottom
+        int taX = centerX;
+        int taY = centerY + radius + 25;
+        float taIndicatorX = taX + trackAngleDeg * 2.0f; // Scale for display
+        
+        // Clamp to reasonable display range
+        if (taIndicatorX >= centerX - radius && taIndicatorX <= centerX + radius) {
+            DrawLine((int)taIndicatorX, taY - 5, (int)taIndicatorX, taY + 5, WHITE);
+            DrawLine((int)taIndicatorX - 3, taY, (int)taIndicatorX + 3, taY, WHITE);
+            
+            // Show track angle value
+            char taText[16];
+            sprintf(taText, "%.1f°", trackAngleDeg);
+            DrawText(taText, (int)taIndicatorX - 12, taY + 8, 8, WHITE);
+        }
+    }
+    
     // Roll scale (outer ring) - FIXED markers
     for (int roll = -60; roll <= 60; roll += 10) {
         if (roll == 0) continue;
@@ -987,7 +1374,11 @@ void FlightSimulator::drawAttitudeIndicator()
             if (y >= altY + 5 && y <= altY + altHeight - 5) {
                 DrawLine(altX + 2, y, altX + 12, y, WHITE);
                 if (alt % 200 == 0 && alt != (int)altitudeFeet) {
-                    sprintf(instText, alt >= 1000 ? "%.0fK" : "%d", alt >= 1000 ? alt/1000.0f : alt);
+                    if (alt >= 1000) {
+                        sprintf(instText, "%.0fK", alt/1000.0f);
+                    } else {
+                        sprintf(instText, "%d", alt);
+                    }
                     DrawText(instText, altX + 15, y - 4, 8, WHITE);
                 }
             }
@@ -1065,8 +1456,8 @@ void FlightSimulator::drawAttitudeIndicator()
         double cosY = cos(yawRad), sinY = sin(yawRad);
         
         // Body frame accelerations (u_dot, v_dot, w_dot)
-        double ax_body = cosY*cosP*ax_ned + sinY*cosP*ay_ned - sinP*az_ned;
-        double ay_body = (-sinY*cosR + cosY*sinP*sinR)*ax_ned + (cosY*cosR + sinY*sinP*sinR)*ay_ned + cosP*sinR*az_ned;
+        double ax_body __attribute__((unused)) = cosY*cosP*ax_ned + sinY*cosP*ay_ned - sinP*az_ned;
+        double ay_body __attribute__((unused)) = (-sinY*cosR + cosY*sinP*sinR)*ax_ned + (cosY*cosR + sinY*sinP*sinR)*ay_ned + cosP*sinR*az_ned;
         double az_body = (sinY*sinR + cosY*sinP*cosR)*ax_ned + (-cosY*sinR + sinY*sinP*cosR)*ay_ned + cosP*cosR*az_ned;
         
         // G-force = body Z-axis acceleration / gravity (including gravity component)
@@ -1112,7 +1503,7 @@ void FlightSimulator::drawAttitudeIndicator()
     DrawText("G-FORCE", gX + 15, gY + gHeight + 5, 8, WHITE);
     
     // Instrument label
-    DrawText("ATTITUDE", centerX - 35, centerY + radius + 10, 12, WHITE);
+    DrawText("ATTITUDE + FPM", centerX - 45, centerY + radius + 10, 12, WHITE);
     
     // Current attitude values (digital display)
     char attText[64];
@@ -1128,9 +1519,19 @@ void FlightSimulator::drawAttitudeIndicator()
     
     DrawText(attText, centerX - 45, centerY + radius + 25, 10, attTextColor);
     
+    // Flight path information
+    char fpText[64];
+    double totalSpeed = sqrt(engineState.Vx * engineState.Vx + engineState.Vy * engineState.Vy + engineState.Vz * engineState.Vz);
+    sprintf(fpText, "GS: %.1f m/s", totalSpeed);
+    DrawText(fpText, centerX - 45, centerY + radius + 40, 8, GREEN);
+    
+    // Show AoA and sideslip digitally
+    sprintf(fpText, "AoA: %+.1f° β: %+.1f°", currentAoA * 180.0 / M_PI, currentBeta * 180.0 / M_PI);
+    DrawText(fpText, centerX - 60, centerY + radius + 55, 8, WHITE);
+    
     // Extreme attitude warning
     if (fabsf(pitchDeg) > 80.0f) {
-        DrawText("EXTREME PITCH", centerX - 50, centerY + radius + 40, 10, RED);
+        DrawText("EXTREME PITCH", centerX - 50, centerY + radius + 70, 10, RED);
     }
 }
 
@@ -1277,4 +1678,172 @@ void FlightSimulator::sendControlsToOFM()
     ofmInterface.setCommand(1, controls.elevator);  // Elevator command  
     ofmInterface.setCommand(2, controls.rudder);    // Rudder command
     ofmInterface.setCommand(3, controls.throttle);  // Throttle command
+}
+
+void FlightSimulator::drawForceVectors()
+{
+    if (!forceViz.showForces && !forceViz.showMoments) return;
+    
+    // Get aircraft position and orientation
+    Vector3 aircraftPos = { (float)engineState.X, (float)(-engineState.Z), (float)engineState.Y };
+    
+    double R[3][3];
+    QuaternionOperations::toMatrix(engineState.q, R);
+    
+    // Draw force vectors
+    if (forceViz.showForces) {
+        for (const auto& force : forceViz.forces) {
+            // Transform application point from body frame to world frame
+            Vector3 worldPos;
+            worldPos.x = aircraftPos.x + (float)(R[0][0] * force.position.x + R[0][1] * force.position.y + R[0][2] * force.position.z);
+            worldPos.y = aircraftPos.y + (float)(-R[2][0] * force.position.x - R[2][1] * force.position.y - R[2][2] * force.position.z);
+            worldPos.z = aircraftPos.z + (float)(R[1][0] * force.position.x + R[1][1] * force.position.y + R[1][2] * force.position.z);
+            
+            // Transform force vector from body frame to world frame
+            Vector3 worldForce;
+            worldForce.x = (float)(R[0][0] * force.force.x + R[0][1] * force.force.y + R[0][2] * force.force.z);
+            worldForce.y = (float)(-R[2][0] * force.force.x - R[2][1] * force.force.y - R[2][2] * force.force.z);
+            worldForce.z = (float)(R[1][0] * force.force.x + R[1][1] * force.force.y + R[1][2] * force.force.z);
+            
+            // Scale force vector for visualization
+            Vector3 scaledForce = {
+                worldForce.x * forceViz.forceScale,
+                worldForce.y * forceViz.forceScale,
+                worldForce.z * forceViz.forceScale
+            };
+            
+            // Draw force vector as line
+            Vector3 forceEnd = {
+                worldPos.x + scaledForce.x,
+                worldPos.y + scaledForce.y,
+                worldPos.z + scaledForce.z
+            };
+            
+            DrawLine3D(worldPos, forceEnd, force.color);
+            
+            // Draw application point
+            DrawSphere(worldPos, 1.0f, force.color);
+            
+            // Draw arrowhead
+            Vector3 forceDir = Vector3Normalize(scaledForce);
+            float arrowSize = 3.0f;
+            
+            // Calculate perpendicular vectors for arrowhead
+            Vector3 perp1 = Vector3CrossProduct(forceDir, {0, 1, 0});
+            if (Vector3Length(perp1) < 0.1f) perp1 = Vector3CrossProduct(forceDir, {1, 0, 0});
+            perp1 = Vector3Normalize(perp1);
+            Vector3 perp2 = Vector3CrossProduct(forceDir, perp1);
+            perp2 = Vector3Normalize(perp2);
+            
+            Vector3 arrowBase = {
+                forceEnd.x - forceDir.x * arrowSize,
+                forceEnd.y - forceDir.y * arrowSize,
+                forceEnd.z - forceDir.z * arrowSize
+            };
+            
+            Vector3 arrow1 = {
+                arrowBase.x + perp1.x * arrowSize * 0.5f,
+                arrowBase.y + perp1.y * arrowSize * 0.5f,
+                arrowBase.z + perp1.z * arrowSize * 0.5f
+            };
+            
+            Vector3 arrow2 = {
+                arrowBase.x - perp1.x * arrowSize * 0.5f,
+                arrowBase.y - perp1.y * arrowSize * 0.5f,
+                arrowBase.z - perp1.z * arrowSize * 0.5f
+            };
+            
+            Vector3 arrow3 = {
+                arrowBase.x + perp2.x * arrowSize * 0.5f,
+                arrowBase.y + perp2.y * arrowSize * 0.5f,
+                arrowBase.z + perp2.z * arrowSize * 0.5f
+            };
+            
+            Vector3 arrow4 = {
+                arrowBase.x - perp2.x * arrowSize * 0.5f,
+                arrowBase.y - perp2.y * arrowSize * 0.5f,
+                arrowBase.z - perp2.z * arrowSize * 0.5f
+            };
+            
+            DrawLine3D(forceEnd, arrow1, force.color);
+            DrawLine3D(forceEnd, arrow2, force.color);
+            DrawLine3D(forceEnd, arrow3, force.color);
+            DrawLine3D(forceEnd, arrow4, force.color);
+            
+            // Draw force magnitude text (if labels enabled)
+            if (forceViz.showLabels) {
+                float magnitude = sqrtf(force.force.x * force.force.x + force.force.y * force.force.y + force.force.z * force.force.z);
+                // Note: 3D text positioning is complex - this would need camera projection
+                // For now, we'll show this info in the HUD instead
+            }
+        }
+    }
+    
+    // Draw moment vectors
+    if (forceViz.showMoments) {
+        for (const auto& moment : forceViz.moments) {
+            // Transform application point from body frame to world frame
+            Vector3 worldPos;
+            worldPos.x = aircraftPos.x + (float)(R[0][0] * moment.position.x + R[0][1] * moment.position.y + R[0][2] * moment.position.z);
+            worldPos.y = aircraftPos.y + (float)(-R[2][0] * moment.position.x - R[2][1] * moment.position.y - R[2][2] * moment.position.z);
+            worldPos.z = aircraftPos.z + (float)(R[1][0] * moment.position.x + R[1][1] * moment.position.y + R[1][2] * moment.position.z);
+            
+            // Transform moment vector from body frame to world frame
+            Vector3 worldMoment;
+            worldMoment.x = (float)(R[0][0] * moment.force.x + R[0][1] * moment.force.y + R[0][2] * moment.force.z);
+            worldMoment.y = (float)(-R[2][0] * moment.force.x - R[2][1] * moment.force.y - R[2][2] * moment.force.z);
+            worldMoment.z = (float)(R[1][0] * moment.force.x + R[1][1] * moment.force.y + R[1][2] * moment.force.z);
+            
+            // Scale moment vector for visualization
+            Vector3 scaledMoment = {
+                worldMoment.x * forceViz.momentScale,
+                worldMoment.y * forceViz.momentScale,
+                worldMoment.z * forceViz.momentScale
+            };
+            
+            // Draw moment as curved arrow (simplified as straight line with different thickness)
+            Vector3 momentEnd = {
+                worldPos.x + scaledMoment.x,
+                worldPos.y + scaledMoment.y,
+                worldPos.z + scaledMoment.z
+            };
+            
+            // Draw thicker line for moments
+            DrawLine3D(worldPos, momentEnd, moment.color);
+            
+            // Draw rotation indicator (circle around the moment axis)
+            Vector3 momentDir = Vector3Normalize(scaledMoment);
+            float circleRadius = 5.0f;
+            
+            // Create a circle perpendicular to the moment axis
+            Vector3 perp1 = Vector3CrossProduct(momentDir, {0, 1, 0});
+            if (Vector3Length(perp1) < 0.1f) perp1 = Vector3CrossProduct(momentDir, {1, 0, 0});
+            perp1 = Vector3Normalize(perp1);
+            Vector3 perp2 = Vector3CrossProduct(momentDir, perp1);
+            perp2 = Vector3Normalize(perp2);
+            
+            const int circleSegments = 16;
+            for (int i = 0; i < circleSegments; i++) {
+                float angle1 = (float)(i * 2 * M_PI / circleSegments);
+                float angle2 = (float)((i + 1) * 2 * M_PI / circleSegments);
+                
+                Vector3 p1 = {
+                    worldPos.x + cosf(angle1) * perp1.x * circleRadius + sinf(angle1) * perp2.x * circleRadius,
+                    worldPos.y + cosf(angle1) * perp1.y * circleRadius + sinf(angle1) * perp2.y * circleRadius,
+                    worldPos.z + cosf(angle1) * perp1.z * circleRadius + sinf(angle1) * perp2.z * circleRadius
+                };
+                
+                Vector3 p2 = {
+                    worldPos.x + cosf(angle2) * perp1.x * circleRadius + sinf(angle2) * perp2.x * circleRadius,
+                    worldPos.y + cosf(angle2) * perp1.y * circleRadius + sinf(angle2) * perp2.y * circleRadius,
+                    worldPos.z + cosf(angle2) * perp1.z * circleRadius + sinf(angle2) * perp2.z * circleRadius
+                };
+                
+                DrawLine3D(p1, p2, moment.color);
+            }
+            
+            // Draw center point
+            DrawSphere(worldPos, 1.5f, moment.color);
+        }
+    }
 }
