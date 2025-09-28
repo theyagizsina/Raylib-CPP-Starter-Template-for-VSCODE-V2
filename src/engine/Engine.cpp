@@ -3,6 +3,9 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
+#include <utility>
+
+#include "EngineEvents.h"
 
 namespace engine {
 
@@ -107,6 +110,8 @@ void Engine::tick(double overrideDeltaTime)
         steps++;
     }
 
+    time.fixedStepCount = steps;
+
     // Prevent runaway accumulator when frame time spikes
     if (accumulator > config.fixedTimeStep * 2.0) {
         accumulator = std::fmod(accumulator, config.fixedTimeStep);
@@ -116,6 +121,15 @@ void Engine::tick(double overrideDeltaTime)
     for (auto& subsystem : subsystems) {
         subsystem->onUpdate(context, deltaTime);
     }
+
+    FrameDiagnosticsEvent diagnostics{};
+    diagnostics.deltaTime = deltaTime;
+    diagnostics.fixedTimeStep = config.fixedTimeStep;
+    diagnostics.fixedStepCount = steps;
+    diagnostics.totalTime = time.totalTime;
+    diagnostics.frameIndex = time.frameIndex;
+    diagnostics.accumulator = accumulator;
+    eventBus.publish(std::move(diagnostics));
 
     eventBus.pump();
 }

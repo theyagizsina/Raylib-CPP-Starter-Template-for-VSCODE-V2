@@ -13,12 +13,14 @@
 #endif
 
 FlightSimulator::FlightSimulator()
-    : isSimulationRunning(false),
-      simulationEngine(engineState, bodyState, ofmInterface, &dataLogger),
-      aircraftModelBaseTransform(MatrixIdentity()), customModelScale(1.0f), hasCustomModel(false),
-    cameraMode(FLIGHT_CAMERA_EXTERNAL), cameraDistance(150.0f), cameraYaw(0.0f), cameraPitch(-20.0f),
-    activeGamepadIndex(-1), lastGamepadAxisCount(0), lastGamepadRoll(0.0f), lastGamepadPitch(0.0f),
-    currentAoA(0.0), currentBeta(0.0), currentAirspeed(0.0), currentClimbRate(0.0), lastAltitude(0.0)
+        : isSimulationRunning(false),
+            simulationEngine(engineState, bodyState, ofmInterface, &dataLogger),
+            aircraftModelBaseTransform(MatrixIdentity()), customModelScale(1.0f), hasCustomModel(false),
+        cameraMode(FLIGHT_CAMERA_EXTERNAL), cameraDistance(150.0f), cameraYaw(0.0f), cameraPitch(-20.0f),
+        activeGamepadIndex(-1), lastGamepadAxisCount(0), lastGamepadRoll(0.0f), lastGamepadPitch(0.0f),
+        currentAoA(0.0), currentBeta(0.0), currentAirspeed(0.0), currentClimbRate(0.0), lastAltitude(0.0),
+        hasSimulationEventData(false), hasDiagnosticsEventData(false), lastFrameDelta(0.0),
+        smoothedFps(0.0), lastFixedStepCount(0), lastAccumulatorSeconds(0.0)
 {
     mouseLastPos = { 0, 0 };
     lastGamepadAxes.fill(0.0f);
@@ -39,6 +41,10 @@ FlightSimulator::~FlightSimulator()
 {
     if (simulationStepHandle.valid()) {
         coreEngine.getEventBus().unsubscribe(simulationStepHandle);
+    }
+
+    if (diagnosticsHandle.valid()) {
+        coreEngine.getEventBus().unsubscribe(diagnosticsHandle);
     }
 
     coreEngine.shutdown();
@@ -94,6 +100,14 @@ bool FlightSimulator::initialize()
     lastFixedStepDelta = engineState.dt;
     lastSimulationTimeEvent = 0.0;
     hasSimulationEventData = false;
+
+    diagnosticsHandle = coreEngine.getEventBus().subscribe<engine::FrameDiagnosticsEvent>(
+        [this](const engine::FrameDiagnosticsEvent& evt) { onDiagnosticsFrame(evt); });
+    hasDiagnosticsEventData = false;
+    smoothedFps = 0.0;
+    lastFrameDelta = 0.0;
+    lastFixedStepCount = 0;
+    lastAccumulatorSeconds = 0.0;
 
     // Setup 3D camera with automatic FOV calculation
     camera.position = (Vector3){ 100.0f, 50.0f, 100.0f };
@@ -247,6 +261,26 @@ void FlightSimulator::onSimulationFixedStep(const flightsim::SimulationFixedStep
     }
 }
 
+void FlightSimulator::onDiagnosticsFrame(const engine::FrameDiagnosticsEvent& evt)
+{
+    lastFrameDelta = evt.deltaTime;
+    lastFixedStepCount = evt.fixedStepCount;
+    lastAccumulatorSeconds = evt.accumulator;
+
+    double instantaneousFps = 0.0;
+    if (evt.deltaTime > 1e-6) {
+        instantaneousFps = 1.0 / evt.deltaTime;
+    }
+
+    if (!hasDiagnosticsEventData) {
+        smoothedFps = instantaneousFps;
+        hasDiagnosticsEventData = true;
+    } else {
+        const double smoothingFactor = 0.1;
+        smoothedFps += (instantaneousFps - smoothedFps) * smoothingFactor;
+    }
+}
+
 
 void FlightSimulator::handleInput()
 {
@@ -270,6 +304,11 @@ void FlightSimulator::handleInput()
         lastSimulationTimeEvent = 0.0;
         lastFixedStepDelta = engineState.dt;
         hasSimulationEventData = false;
+    hasDiagnosticsEventData = false;
+    smoothedFps = 0.0;
+    lastFrameDelta = 0.0;
+    lastFixedStepCount = 0;
+    lastAccumulatorSeconds = 0.0;
         currentAoA = 0.0;
         currentBeta = 0.0;
         currentAirspeed = 0.0;
@@ -691,19 +730,19 @@ void FlightSimulator::drawHUD()
     DrawText("SPACE - Pause/Resume", 10, 410, 12, WHITE);
     DrawText("R - Reset Simulation", 10, 425, 12, WHITE);
     DrawText("C - Switch Camera", 10, 440, 12, WHITE);
-    DrawText("H - Head Look On/Off (Cockpit)", 10, 435, 12, WHITE);
-    DrawText("F - Center Head (Cockpit)", 10, 450, 12, WHITE);
-    DrawText("G - Reset FOV (Cockpit)", 10, 465, 12, WHITE);
-    DrawText("Left Click+Drag - Camera/Head", 10, 480, 12, WHITE);
-    DrawText("Mouse Wheel - Zoom/FOV", 10, 495, 12, WHITE);
-    DrawText("L - Load Aircraft Model", 10, 510, 12, WHITE);
-    DrawText("M - Toggle Model Display", 10, 525, 12, WHITE);
+    DrawText("H - Head Look On/Off (Cockpit)", 10, 455, 12, WHITE);
+    DrawText("F - Center Head (Cockpit)", 10, 470, 12, WHITE);
+    DrawText("G - Reset FOV (Cockpit)", 10, 485, 12, WHITE);
+    DrawText("Left Click+Drag - Camera/Head", 10, 500, 12, WHITE);
+    DrawText("Mouse Wheel - Zoom/FOV", 10, 515, 12, WHITE);
+    DrawText("L - Load Aircraft Model", 10, 530, 12, WHITE);
+    DrawText("M - Toggle Model Display", 10, 545, 12, WHITE);
     
-    DrawText("FORCE VISUALIZATION:", 10, 545, 14, YELLOW);
-    DrawText("V - Toggle Forces", 10, 565, 12, forceViz.showForces ? GREEN : WHITE);
-    DrawText("B - Toggle Moments", 10, 580, 12, forceViz.showMoments ? GREEN : WHITE);
-    DrawText("N - Toggle Labels", 10, 595, 12, forceViz.showLabels ? GREEN : WHITE);
-    DrawText("+/- - Scale Vectors", 10, 610, 12, WHITE);
+    DrawText("FORCE VISUALIZATION:", 10, 565, 14, YELLOW);
+    DrawText("V - Toggle Forces", 10, 585, 12, forceViz.showForces ? GREEN : WHITE);
+    DrawText("B - Toggle Moments", 10, 600, 12, forceViz.showMoments ? GREEN : WHITE);
+    DrawText("N - Toggle Labels", 10, 615, 12, forceViz.showLabels ? GREEN : WHITE);
+    DrawText("+/- - Scale Vectors", 10, 630, 12, WHITE);
     
     // Control status display (right side)
     DrawText("CONTROL STATUS:", GetScreenWidth() - 200, 50, 14, YELLOW);
@@ -745,9 +784,31 @@ void FlightSimulator::drawHUD()
     } else {
         DrawText("Gamepad: Not detected", GetScreenWidth() - 200, 135, 12, RED);
     }
+
+    int diagnosticsX = GetScreenWidth() - 200;
+    int diagnosticsY = 210;
+    DrawText("ENGINE DIAGNOSTICS:", diagnosticsX, diagnosticsY, 14, YELLOW);
+    if (hasDiagnosticsEventData) {
+        sprintf(text, "FPS (smoothed): %.1f", smoothedFps);
+        DrawText(text, diagnosticsX, diagnosticsY + 20, 12, WHITE);
+
+        sprintf(text, "Frame dt: %.3f s", lastFrameDelta);
+        DrawText(text, diagnosticsX, diagnosticsY + 35, 12, WHITE);
+
+        sprintf(text, "Fixed Steps: %u", lastFixedStepCount);
+        DrawText(text, diagnosticsX, diagnosticsY + 50, 12, WHITE);
+
+        sprintf(text, "Accumulator: %.3f s", lastAccumulatorSeconds);
+        DrawText(text, diagnosticsX, diagnosticsY + 65, 12, WHITE);
+    } else {
+        DrawText("FPS (smoothed): --", diagnosticsX, diagnosticsY + 20, 12, WHITE);
+        DrawText("Frame dt: --", diagnosticsX, diagnosticsY + 35, 12, WHITE);
+        DrawText("Fixed Steps: --", diagnosticsX, diagnosticsY + 50, 12, WHITE);
+        DrawText("Accumulator: --", diagnosticsX, diagnosticsY + 65, 12, WHITE);
+    }
     
     // Force visualization status and info
-    int forceInfoY = 200;
+    int forceInfoY = diagnosticsY + 90;
     DrawText("FORCE VISUALIZATION:", GetScreenWidth() - 200, forceInfoY, 14, YELLOW);
     
     sprintf(text, "Forces: %s (%d)", forceViz.showForces ? "ON" : "OFF", (int)forceViz.forces.size());

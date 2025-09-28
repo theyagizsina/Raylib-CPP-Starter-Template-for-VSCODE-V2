@@ -1,6 +1,7 @@
 #pragma once
 #include <raylib.h>
 #include <cmath>
+#include <cstdint>
 #include "flightsim/core/EngineState.h"
 #include "flightsim/physics/FlightDynamics.h"
 #include "flightsim/physics/Quaternion.h"
@@ -15,6 +16,7 @@
 #include <memory>
 
 #include "engine/Engine.h"
+#include "engine/EngineEvents.h"
 #include "flightsim/core/SimulationEvents.h"
 
 class FlightSimulationSubsystem;
@@ -125,9 +127,15 @@ private:
     engine::Engine coreEngine;
     FlightSimulationSubsystem* simulationSubsystem = nullptr;
     engine::EventBus::ListenerHandle simulationStepHandle;
+    engine::EventBus::ListenerHandle diagnosticsHandle;
     double lastFixedStepDelta = 0.0;
     double lastSimulationTimeEvent = 0.0;
     bool hasSimulationEventData = false;
+    bool hasDiagnosticsEventData = false;
+    double lastFrameDelta = 0.0;
+    double smoothedFps = 0.0;
+    std::uint32_t lastFixedStepCount = 0;
+    double lastAccumulatorSeconds = 0.0;
     
     // Force vector visualization system
     struct ForceVector {
@@ -181,6 +189,7 @@ private:
     void updateCameraSystem();
     void updateControls();
     void onSimulationFixedStep(const flightsim::SimulationFixedStepEvent& evt);
+    void onDiagnosticsFrame(const engine::FrameDiagnosticsEvent& evt);
 
     void handleForceSample(const SimulationEngine::ForceVectorSample& sample);
     void handleMomentSample(const SimulationEngine::MomentVectorSample& sample);
