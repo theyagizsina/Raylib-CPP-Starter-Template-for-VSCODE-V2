@@ -5,7 +5,37 @@
       "version": "0.2.0",
       "configurations": [
         {
-          "name": "Debug",
+          "name": "CMake Debug",
+          "type": "cppdbg",
+          "request": "launch",
+          "program": "${workspaceFolder}/build/Application",
+          "args": [],
+          "stopAtEntry": false,
+          "cwd": "${workspaceFolder}",
+          "environment": [],
+          "externalConsole": false,
+          "MIMode": "gdb",
+          "setupCommands": [
+            {
+              "description": "Enable pretty-printing for gdb",
+              "text": "-enable-pretty-printing",
+              "ignoreFailures": false
+            }
+          ],
+          "windows": {
+            "program": "${workspaceFolder}/build/Application.exe",
+            "miDebuggerPath": "C:/raylib/w64devkit/bin/gdb.exe"
+          },
+          "osx": {
+            "MIMode": "lldb"
+          },
+          "linux": {
+            "miDebuggerPath": "/usr/bin/gdb"
+          },
+          "preLaunchTask": "cmake build debug"
+        },
+        {
+          "name": "Make Debug",
           "type": "cppdbg",
           "request": "launch",
           "program": "${workspaceFolder}/${fileBasenameNoExtension}",
@@ -23,7 +53,7 @@
             }
           ],
           "windows": {
-            "miDebuggerPath": "C:/raylib/w64devkit/bin/gdb.exe",
+            "miDebuggerPath": "C:/raylib/w64devkit/bin/gdb.exe"
           },
           "osx": {
             "MIMode": "lldb"
@@ -34,7 +64,7 @@
           "preLaunchTask": "build debug"
         },
         {
-          "name": "Run",
+          "name": "Make Run",
           "type": "cppdbg",
           "request": "launch",
           "args": [],
