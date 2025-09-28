@@ -8,8 +8,10 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-FlightSimulator::FlightSimulator() : isSimulationRunning(false), simulationTime(0.0),
-    aircraftModelBaseTransform(MatrixIdentity()), customModelScale(1.0f), hasCustomModel(false),
+FlightSimulator::FlightSimulator()
+    : isSimulationRunning(false),
+      simulationEngine(engineState, bodyState, ofmInterface, &dataLogger),
+      aircraftModelBaseTransform(MatrixIdentity()), customModelScale(1.0f), hasCustomModel(false),
     cameraMode(FLIGHT_CAMERA_EXTERNAL), cameraDistance(150.0f), cameraYaw(0.0f), cameraPitch(-20.0f),
     activeGamepadIndex(-1), lastGamepadAxisCount(0), lastGamepadRoll(0.0f), lastGamepadPitch(0.0f),
     currentAoA(0.0), currentBeta(0.0), currentAirspeed(0.0), currentClimbRate(0.0), lastAltitude(0.0)
@@ -22,6 +24,11 @@ FlightSimulator::FlightSimulator() : isSimulationRunning(false), simulationTime(
     controls.elevator = 0.0f;
     controls.rudder = 0.0f;
     controls.throttle = 0.5f;  // Start with 50% throttle
+
+    simulationEngine.setForceCallback(
+        [this](const SimulationEngine::ForceVectorSample& sample) { handleForceSample(sample); },
+        [this](const SimulationEngine::MomentVectorSample& sample) { handleMomentSample(sample); }
+    );
 }
 
 FlightSimulator::~FlightSimulator()
@@ -46,6 +53,8 @@ bool FlightSimulator::initialize()
         return false;
     }
 
+    simulationEngine.setDataLogger(&dataLogger);
+
     ofmInterface.init();
     ofmInterface.setMassState(
         engineState.mass,
@@ -53,7 +62,8 @@ bool FlightSimulator::initialize()
         engineState.moiX, engineState.moiY, engineState.moiZ
     );
 
-    initializeBodyState();
+    simulationEngine.initializeBodyState();
+    simulationEngine.resetTime();
 
     // Setup 3D camera with automatic FOV calculation
     camera.position = (Vector3){ 100.0f, 50.0f, 100.0f };
@@ -130,23 +140,6 @@ void FlightSimulator::setDefaultConfiguration()
     engineState.subSteps = 1;
 }
 
-void FlightSimulator::initializeBodyState()
-{
-    double R[3][3];
-    QuaternionOperations::toMatrix(engineState.q, R);
-
-    double vb_x = R[0][0] * engineState.Vx + R[1][0] * engineState.Vy + R[2][0] * engineState.Vz;
-    double vb_y = R[0][1] * engineState.Vx + R[1][1] * engineState.Vy + R[2][1] * engineState.Vz;
-    double vb_z = R[0][2] * engineState.Vx + R[1][2] * engineState.Vy + R[2][2] * engineState.Vz;
-
-    bodyState.u = vb_x;
-    bodyState.v = vb_y;
-    bodyState.w = vb_z;
-    bodyState.p = engineState.p;
-    bodyState.q = engineState.q_;
-    bodyState.r = engineState.r;
-}
-
 void FlightSimulator::update()
 {
     if (!isSimulationRunning) return;
@@ -155,8 +148,8 @@ void FlightSimulator::update()
     updateControls();
     
     double deltaTime = GetFrameTime();
-    simulationStep(deltaTime);
-    simulationTime += deltaTime;
+    forceViz.clear();
+    simulationEngine.step(deltaTime, controls);
     
     updateCameraSystem();
     updateFlightData();
@@ -176,194 +169,6 @@ void FlightSimulator::update()
     }
 }
 
-void FlightSimulator::simulationStep(double deltaTime)
-{
-    double altitude = -engineState.Z;
-    double T, a, rho, pp;
-    Atmosphere::get1976StandardAtmosphere(altitude, T, a, rho, pp);
-
-    ofmInterface.setAtmosphere(altitude, T, a, rho, pp,
-                              engineState.windX, engineState.windY, engineState.windZ);
-
-    // Send current control inputs to OFM
-    sendControlsToOFM();
-
-    double subDt = deltaTime / double(engineState.subSteps);
-    for (int si = 0; si < engineState.subSteps; si++) {
-        double speedBody = std::sqrt(bodyState.u * bodyState.u + bodyState.v * bodyState.v + bodyState.w * bodyState.w);
-        double alpha = 0.0, beta = 0.0;
-        if (speedBody > 1e-6) {
-            alpha = std::atan2(bodyState.w, bodyState.u);
-            beta = std::asin(bodyState.v / speedBody);
-        }
-
-        ofmInterface.setBodyState(
-            0, 0, 0,
-            bodyState.u, bodyState.v, bodyState.w,
-            engineState.windX, engineState.windY, engineState.windZ,
-            0, 0, 0,
-            bodyState.p, bodyState.q, bodyState.r,
-            0, 0, 0,
-            alpha, beta
-        );
-
-        ofmInterface.simulate(subDt);
-
-        double FxB = 0, FyB = 0, FzB = 0;
-        double MxB = 0, MyB = 0, MzB = 0;
-        calculateAeroForces(FxB, FyB, FzB, MxB, MyB, MzB);
-
-        double R[3][3];
-        QuaternionOperations::toMatrix(engineState.q, R);
-        addGravitationalForces(R, FxB, FyB, FzB);
-
-        updatePhysics(subDt, FxB, FyB, FzB, MxB, MyB, MzB);
-        updatePosition(subDt);
-    }
-
-    // Log data occasionally
-    static int logCounter = 0;
-    if (++logCounter % 10 == 0) {
-        double rollRad, pitchRad, yawRad;
-        QuaternionOperations::toEulerZYX(engineState.q, rollRad, pitchRad, yawRad);
-
-        double speedBody = std::sqrt(bodyState.u * bodyState.u + bodyState.v * bodyState.v + bodyState.w * bodyState.w);
-        double alphaDeg = 0.0, betaDeg = 0.0;
-        if (speedBody > 1e-6) {
-            alphaDeg = std::atan2(bodyState.w, bodyState.u) * 180.0 / M_PI;
-            betaDeg = std::asin(bodyState.v / speedBody) * 180.0 / M_PI;
-        }
-
-        dataLogger.logFlightData(simulationTime, engineState.X, engineState.Y, engineState.Z,
-                               rollRad * 180.0 / M_PI, pitchRad * 180.0 / M_PI, yawRad * 180.0 / M_PI,
-                               alphaDeg, betaDeg);
-    }
-}
-
-void FlightSimulator::calculateAeroForces(double& FxB, double& FyB, double& FzB,
-                                        double& MxB, double& MyB, double& MzB)
-{
-    // Clear previous force visualization data
-    forceViz.clear();
-    
-    // Add gravitational force visualization (always present)
-    Vector3 gravityForce = {0.0f, (float)(engineState.mass * 9.81), 0.0f}; // NED frame
-    forceViz.addForce({0.0f, 0.0f, 0.0f}, gravityForce, BLUE, "Gravity");
-    
-    while (true) {
-        double fx = 0, fy = 0, fz = 0, px = 0, py = 0, pz = 0;
-        bool ok = ofmInterface.addLocalForceComponent(fx, fy, fz, px, py, pz);
-        if (!ok) break;
-        FxB += fx; FyB += fy; FzB += fz;
-
-        // Add force vector to visualization
-        Vector3 forceVec = {(float)fx, (float)fy, (float)fz};
-        Vector3 forcePos = {(float)px, (float)py, (float)pz};
-        
-        // Color code forces by magnitude and type
-        Color forceColor = RED;
-        std::string forceLabel = "Aero Force";
-        
-        float forceMag = sqrtf(fx*fx + fy*fy + fz*fz);
-        if (forceMag > 1000.0f) forceColor = RED;        // High force - red
-        else if (forceMag > 500.0f) forceColor = ORANGE; // Medium force - orange  
-        else if (forceMag > 100.0f) forceColor = YELLOW; // Low force - yellow
-        else forceColor = GREEN;                         // Very low force - green
-        
-        forceViz.addForce(forcePos, forceVec, forceColor, forceLabel);
-
-        double rx = px - engineState.cmX;
-        double ry = py - engineState.cmY;
-        double rz = pz - engineState.cmZ;
-        double Mx_ = ry * fz - rz * fy;
-        double My_ = rz * fx - rx * fz;
-        double Mz_ = rx * fy - ry * fx;
-        MxB += Mx_; MyB += My_; MzB += Mz_;
-        
-        // Add moment vectors from force application
-        if (fabsf(Mx_) > 1.0 || fabsf(My_) > 1.0 || fabsf(Mz_) > 1.0) {
-            Vector3 momentVec = {(float)Mx_, (float)My_, (float)Mz_};
-            forceViz.addMoment({(float)engineState.cmX, (float)engineState.cmY, (float)engineState.cmZ}, 
-                              momentVec, PURPLE, "Force Moment");
-        }
-    }
-
-    while (true) {
-        double mx = 0, my = 0, mz = 0;
-        bool ok = ofmInterface.addLocalMomentComponent(mx, my, mz);
-        if (!ok) break;
-        MxB += mx; MyB += my; MzB += mz;
-        
-        // Add direct moment vectors to visualization
-        Vector3 momentVec = {(float)mx, (float)my, (float)mz};
-        
-        // Color code moments by axis
-        Color momentColor = MAGENTA;
-        std::string momentLabel = "Direct Moment";
-        
-        if (fabsf(mx) > fabsf(my) && fabsf(mx) > fabsf(mz)) {
-            momentColor = RED;    // Roll moment - red
-            momentLabel = "Roll Moment";
-        } else if (fabsf(my) > fabsf(mz)) {
-            momentColor = GREEN;  // Pitch moment - green
-            momentLabel = "Pitch Moment";
-        } else {
-            momentColor = BLUE;   // Yaw moment - blue
-            momentLabel = "Yaw Moment";
-        }
-        
-        forceViz.addMoment({(float)engineState.cmX, (float)engineState.cmY, (float)engineState.cmZ}, 
-                          momentVec, momentColor, momentLabel);
-    }
-}
-
-void FlightSimulator::addGravitationalForces(const double R[3][3], double& FxB, double& FyB, double& FzB)
-{
-    double GxNED = 0, GyNED = 0, GzNED = engineState.mass * 9.81;
-
-    double Rt[3][3];
-    for (int r = 0; r < 3; r++) {
-        for (int c = 0; c < 3; c++) {
-            Rt[r][c] = R[c][r];
-        }
-    }
-
-    double Gbx = Rt[0][0] * GxNED + Rt[0][1] * GyNED + Rt[0][2] * GzNED;
-    double Gby = Rt[1][0] * GxNED + Rt[1][1] * GyNED + Rt[1][2] * GzNED;
-    double Gbz = Rt[2][0] * GxNED + Rt[2][1] * GyNED + Rt[2][2] * GzNED;
-
-    FxB += Gbx;
-    FyB += Gby;
-    FzB += Gbz;
-}
-
-void FlightSimulator::updatePhysics(double subDt, double FxB, double FyB, double FzB,
-                                  double MxB, double MyB, double MzB)
-{
-    if (engineState.integratorType == 0)
-        FlightDynamics::eulerIntegrate(bodyState, subDt, FxB, FyB, FzB, MxB, MyB, MzB,
-                                     engineState.mass, engineState.moiX, engineState.moiY, engineState.moiZ);
-    else
-        FlightDynamics::rk4Integrate(bodyState, subDt, FxB, FyB, FzB, MxB, MyB, MzB,
-                                   engineState.mass, engineState.moiX, engineState.moiY, engineState.moiZ);
-
-    QuaternionOperations::integrate(engineState.q, bodyState.p, bodyState.q, bodyState.r, subDt);
-}
-
-void FlightSimulator::updatePosition(double subDt)
-{
-    double R[3][3];
-    QuaternionOperations::toMatrix(engineState.q, R);
-    double vxN, vyE, vzD;
-    QuaternionOperations::bodyToWorld(R, bodyState.u, bodyState.v, bodyState.w, vxN, vyE, vzD);
-    engineState.Vx = vxN;
-    engineState.Vy = vyE;
-    engineState.Vz = vzD;
-
-    engineState.X += engineState.Vx * subDt;
-    engineState.Y += engineState.Vy * subDt;
-    engineState.Z += engineState.Vz * subDt;
-}
 
 void FlightSimulator::handleInput()
 {
@@ -374,9 +179,9 @@ void FlightSimulator::handleInput()
     if (IsKeyPressed(KEY_R)) {
         // Reset simulation
         setDefaultConfiguration();
-        initializeBodyState();
+    simulationEngine.initializeBodyState();
         flightPath.clear();
-        simulationTime = 0.0;
+    simulationEngine.resetTime();
         lastAltitude = -engineState.Z;
         isSimulationRunning = true;
     }
@@ -730,7 +535,7 @@ void FlightSimulator::drawHUD()
     // Left side - Primary flight data
     DrawText("FLIGHT DATA", 10, 10, 16, YELLOW);
     
-    sprintf(text, "Time: %.1fs", simulationTime);
+    sprintf(text, "Time: %.1fs", simulationEngine.getSimulationTime());
     DrawText(text, 10, 30, 18, WHITE);
 
     sprintf(text, "Altitude: %.0fm", -engineState.Z);
@@ -1670,14 +1475,58 @@ void FlightSimulator::updateControls()
     }
 }
 
-void FlightSimulator::sendControlsToOFM()
+void FlightSimulator::handleForceSample(const SimulationEngine::ForceVectorSample& sample)
 {
-    // Send control inputs to OFM
-    // Command IDs may need to be adjusted based on actual OFM API
-    ofmInterface.setCommand(0, controls.aileron);   // Aileron command
-    ofmInterface.setCommand(1, controls.elevator);  // Elevator command  
-    ofmInterface.setCommand(2, controls.rudder);    // Rudder command
-    ofmInterface.setCommand(3, controls.throttle);  // Throttle command
+    Vector3 position = { (float)sample.px, (float)sample.py, (float)sample.pz };
+    Vector3 forceVec = { (float)sample.fx, (float)sample.fy, (float)sample.fz };
+
+    Color forceColor = GREEN;
+    std::string label = "Aero Force";
+
+    if (sample.kind == SimulationEngine::ForceKind::Gravity) {
+        forceColor = BLUE;
+        label = "Gravity";
+    } else {
+        float magnitude = sqrtf(forceVec.x * forceVec.x + forceVec.y * forceVec.y + forceVec.z * forceVec.z);
+        if (magnitude > 1000.0f) {
+            forceColor = RED;
+        } else if (magnitude > 500.0f) {
+            forceColor = ORANGE;
+        } else if (magnitude > 100.0f) {
+            forceColor = YELLOW;
+        } else {
+            forceColor = GREEN;
+        }
+    }
+
+    forceViz.addForce(position, forceVec, forceColor, label);
+}
+
+void FlightSimulator::handleMomentSample(const SimulationEngine::MomentVectorSample& sample)
+{
+    Vector3 position = { (float)sample.px, (float)sample.py, (float)sample.pz };
+    Vector3 momentVec = { (float)sample.mx, (float)sample.my, (float)sample.mz };
+
+    Color momentColor = PURPLE;
+    std::string label = "Force Moment";
+
+    if (sample.kind == SimulationEngine::MomentKind::Direct) {
+        momentColor = MAGENTA;
+        label = "Direct Moment";
+
+        if (fabs(momentVec.x) > fabs(momentVec.y) && fabs(momentVec.x) > fabs(momentVec.z)) {
+            momentColor = RED;
+            label = "Roll Moment";
+        } else if (fabs(momentVec.y) > fabs(momentVec.z)) {
+            momentColor = GREEN;
+            label = "Pitch Moment";
+        } else {
+            momentColor = BLUE;
+            label = "Yaw Moment";
+        }
+    }
+
+    forceViz.addMoment(position, momentVec, momentColor, label);
 }
 
 void FlightSimulator::drawForceVectors()

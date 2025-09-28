@@ -7,6 +7,8 @@
 #include "flightsim/physics/Atmosphere.h"
 #include "flightsim/ofm/OFMInterface.h"
 #include "flightsim/io/DataLogger.h"
+#include "flightsim/core/SimulationEngine.h"
+#include "flightsim/core/FlightControls.h"
 #include <vector>
 #include <string>
 #include <array>
@@ -28,7 +30,7 @@ private:
     Camera3D camera;
     std::vector<Vector3> flightPath;
     bool isSimulationRunning;
-    double simulationTime;
+    SimulationEngine simulationEngine;
     
     // 3D Model
     Model aircraftModel;
@@ -112,12 +114,7 @@ private:
     double lastAltitude;
     
     // Control system
-    struct FlightControls {
-        float aileron;      // -1.0 to 1.0 (left/right roll)
-        float elevator;     // -1.0 to 1.0 (nose up/down)
-        float rudder;       // -1.0 to 1.0 (nose left/right)
-        float throttle;     // 0.0 to 1.0 (engine power)
-    } controls;
+    FlightControls controls;
     
     // Force vector visualization system
     struct ForceVector {
@@ -157,14 +154,6 @@ private:
 
     // Default configuration for easier testing
     void setDefaultConfiguration();
-    void initializeBodyState();
-    void simulationStep(double deltaTime);
-    void calculateAeroForces(double& FxB, double& FyB, double& FzB,
-                           double& MxB, double& MyB, double& MzB);
-    void addGravitationalForces(const double R[3][3], double& FxB, double& FyB, double& FzB);
-    void updatePhysics(double subDt, double FxB, double FyB, double FzB,
-                      double MxB, double MyB, double MzB);
-    void updatePosition(double subDt);
 
     // Visualization methods
     void drawAircraft();
@@ -179,7 +168,9 @@ private:
     void updateCameraSystem();
     void updateFlightData();
     void updateControls();
-    void sendControlsToOFM();
+
+    void handleForceSample(const SimulationEngine::ForceVectorSample& sample);
+    void handleMomentSample(const SimulationEngine::MomentVectorSample& sample);
 
 public:
     FlightSimulator();
