@@ -2,7 +2,11 @@
 #include <iostream>
 #include <cmath>
 #include <algorithm>
+#include <memory>
 #include <raymath.h>
+
+#include "flightsim/core/FlightSimulationSubsystem.h"
+#include "engine/EngineConfig.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -33,6 +37,8 @@ FlightSimulator::FlightSimulator()
 
 FlightSimulator::~FlightSimulator()
 {
+    coreEngine.shutdown();
+
     if (hasCustomModel) {
         UnloadModel(aircraftModel);
     }
@@ -62,8 +68,22 @@ bool FlightSimulator::initialize()
         engineState.moiX, engineState.moiY, engineState.moiZ
     );
 
-    simulationEngine.initializeBodyState();
-    simulationEngine.resetTime();
+    engine::EngineConfig engineConfig;
+    engineConfig.fixedTimeStep = engineState.dt;
+    engineConfig.maxFixedStepsPerFrame = 4;
+    engineConfig.maxDeltaTime = 0.1;
+    coreEngine.setConfig(engineConfig);
+
+    auto flightSubsystem = std::make_unique<FlightSimulationSubsystem>(simulationEngine, engineState, controls);
+    simulationSubsystem = flightSubsystem.get();
+    coreEngine.registerSubsystem(std::move(flightSubsystem));
+
+    if (!coreEngine.initialize()) {
+        std::cout << "Failed to initialize core engine" << std::endl;
+        return false;
+    }
+
+    coreEngine.start();
 
     // Setup 3D camera with automatic FOV calculation
     camera.position = (Vector3){ 100.0f, 50.0f, 100.0f };
@@ -149,7 +169,7 @@ void FlightSimulator::update()
     
     double deltaTime = GetFrameTime();
     forceViz.clear();
-    simulationEngine.step(deltaTime, controls);
+    coreEngine.tick(deltaTime);
     
     updateCameraSystem();
     updateFlightData();
@@ -165,6 +185,7 @@ void FlightSimulator::update()
     // Stop simulation if aircraft hits ground
     if (engineState.Z >= 0.0) {
         isSimulationRunning = false;
+        coreEngine.synchronizeClock();
         std::cout << "Ground contact. Simulation stopped." << std::endl;
     }
 }
@@ -174,16 +195,23 @@ void FlightSimulator::handleInput()
 {
     if (IsKeyPressed(KEY_SPACE)) {
         isSimulationRunning = !isSimulationRunning;
+        if (isSimulationRunning) {
+            coreEngine.synchronizeClock();
+        }
     }
 
     if (IsKeyPressed(KEY_R)) {
         // Reset simulation
         setDefaultConfiguration();
-    simulationEngine.initializeBodyState();
+        engine::EngineConfig engineConfig = coreEngine.getConfig();
+        engineConfig.fixedTimeStep = engineState.dt;
+        coreEngine.setConfig(engineConfig);
+        simulationEngine.initializeBodyState();
         flightPath.clear();
-    simulationEngine.resetTime();
+        simulationEngine.resetTime();
         lastAltitude = -engineState.Z;
         isSimulationRunning = true;
+        coreEngine.synchronizeClock();
     }
     
     // Load custom model - L key

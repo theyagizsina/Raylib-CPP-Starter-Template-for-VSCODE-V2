@@ -374,11 +374,14 @@ FLIGHTSIM_SOURCES = $(wildcard $(SRC_DIR)/flightsim/core/*.cpp) \
                    $(wildcard $(SRC_DIR)/flightsim/ofm/*.cpp) \
                    $(wildcard $(SRC_DIR)/flightsim/*.cpp)
 
+# Engine core sources
+ENGINE_SOURCES = $(wildcard $(SRC_DIR)/engine/*.cpp)
+
 # Define main source files
 MAIN_SOURCES = $(wildcard $(SRC_DIR)/*.cpp)
 
 # Combine all sources
-ALL_SOURCES = $(MAIN_SOURCES) $(FLIGHTSIM_SOURCES)
+ALL_SOURCES = $(MAIN_SOURCES) $(ENGINE_SOURCES) $(FLIGHTSIM_SOURCES)
 
 # Convert to object file names
 OBJS = $(ALL_SOURCES:.cpp=.o)

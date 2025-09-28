@@ -12,6 +12,11 @@
 #include <vector>
 #include <string>
 #include <array>
+#include <memory>
+
+#include "engine/Engine.h"
+
+class FlightSimulationSubsystem;
 
 // Use typedef to avoid conflict with Raylib's CameraMode
 typedef enum {
@@ -115,6 +120,9 @@ private:
     
     // Control system
     FlightControls controls;
+
+    engine::Engine coreEngine;
+    FlightSimulationSubsystem* simulationSubsystem = nullptr;
     
     // Force vector visualization system
     struct ForceVector {
