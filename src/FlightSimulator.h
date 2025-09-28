@@ -7,6 +7,8 @@
 #include "flightsim/ofm/OFMInterface.h"
 #include "flightsim/io/DataLogger.h"
 #include <vector>
+#include <string>
+#include <array>
 
 // Use typedef to avoid conflict with Raylib's CameraMode
 typedef enum {
@@ -27,12 +29,26 @@ private:
     bool isSimulationRunning;
     double simulationTime;
     
+    // 3D Model
+    Model aircraftModel;
+    Matrix aircraftModelBaseTransform;
+    float customModelScale;
+    bool hasCustomModel;
+    
     // Camera system
     FlightCameraType cameraMode;
     Vector2 mouseLastPos;
     float cameraDistance;
     float cameraYaw;
     float cameraPitch;
+
+    // Gamepad state
+    int activeGamepadIndex;
+    std::string activeGamepadName;
+    float lastGamepadRoll;
+    float lastGamepadPitch;
+    int lastGamepadAxisCount;
+    std::array<float, 8> lastGamepadAxes;
     
     // Flight data for display
     double currentAoA;
@@ -66,6 +82,7 @@ private:
     void drawEnvironment();
     void drawInstruments();
     void drawHUD();
+    bool loadAircraftModel(const char* modelPath);
     void drawFlightPathMarker();
     void drawAttitudeIndicator();
     void updateCameraSystem();

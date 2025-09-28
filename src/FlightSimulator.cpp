@@ -1,6 +1,8 @@
 #include "FlightSimulator.h"
 #include <iostream>
 #include <cmath>
+#include <algorithm>
+#include <raymath.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -8,9 +10,12 @@
 
 FlightSimulator::FlightSimulator() : isSimulationRunning(false), simulationTime(0.0),
     cameraMode(FLIGHT_CAMERA_EXTERNAL), cameraDistance(150.0f), cameraYaw(0.0f), cameraPitch(-20.0f),
+    activeGamepadIndex(-1), lastGamepadRoll(0.0f), lastGamepadPitch(0.0f),
+    lastGamepadAxisCount(0), aircraftModelBaseTransform(MatrixIdentity()), customModelScale(1.0f), hasCustomModel(false),
     currentAoA(0.0), currentBeta(0.0), currentAirspeed(0.0), currentClimbRate(0.0), lastAltitude(0.0)
 {
     mouseLastPos = { 0, 0 };
+    lastGamepadAxes.fill(0.0f);
     
     // Initialize flight controls
     controls.aileron = 0.0f;
@@ -21,6 +26,9 @@ FlightSimulator::FlightSimulator() : isSimulationRunning(false), simulationTime(
 
 FlightSimulator::~FlightSimulator()
 {
+    if (hasCustomModel) {
+        UnloadModel(aircraftModel);
+    }
 }
 
 bool FlightSimulator::initialize()
@@ -62,10 +70,38 @@ bool FlightSimulator::initialize()
     
     // Initialize flight data
     lastAltitude = -engineState.Z;
+    activeGamepadIndex = -1;
+    activeGamepadName.clear();
+    lastGamepadRoll = 0.0f;
+    lastGamepadPitch = 0.0f;
+    lastGamepadAxisCount = 0;
+    lastGamepadAxes.fill(0.0f);
 
     isSimulationRunning = true;
 
     return true;
+}
+
+bool FlightSimulator::loadAircraftModel(const char* modelPath)
+{
+    if (hasCustomModel) {
+        UnloadModel(aircraftModel);
+        hasCustomModel = false;
+    }
+    
+    aircraftModel = LoadModel(modelPath);
+    
+    if (aircraftModel.meshCount > 0) {
+        aircraftModelBaseTransform = aircraftModel.transform;
+        customModelScale = 1.0f;
+        hasCustomModel = true;
+        std::cout << "Aircraft model loaded successfully: " << modelPath << std::endl;
+        std::cout << "Meshes: " << aircraftModel.meshCount << ", Materials: " << aircraftModel.materialCount << std::endl;
+        return true;
+    } else {
+        std::cout << "Failed to load aircraft model: " << modelPath << std::endl;
+        return false;
+    }
 }
 
 void FlightSimulator::setDefaultConfiguration()
@@ -291,6 +327,27 @@ void FlightSimulator::handleInput()
         isSimulationRunning = true;
     }
     
+    // Load custom model - L key
+    if (IsKeyPressed(KEY_L)) {
+        // Try to load a model from the models directory
+        if (loadAircraftModel("models/aircraft.obj") || 
+            loadAircraftModel("models/aircraft.glb") ||
+            loadAircraftModel("models/aircraft.gltf") ||
+            loadAircraftModel("aircraft.obj") ||
+            loadAircraftModel("aircraft.glb") ||
+            loadAircraftModel("aircraft.gltf")) {
+            std::cout << "Custom aircraft model loaded!" << std::endl;
+        } else {
+            std::cout << "No aircraft model found. Place your model as 'models/aircraft.obj', 'models/aircraft.glb', or in root directory" << std::endl;
+        }
+    }
+    
+    // Toggle between custom and basic model - M key
+    if (IsKeyPressed(KEY_M) && hasCustomModel) {
+        // This just shows how you could toggle, but we'll keep the custom model active
+        std::cout << "Using custom aircraft model" << std::endl;
+    }
+    
     // Camera mode switching
     if (IsKeyPressed(KEY_C)) {
         cameraMode = (cameraMode == FLIGHT_CAMERA_EXTERNAL) ? FLIGHT_CAMERA_COCKPIT : FLIGHT_CAMERA_EXTERNAL;
@@ -350,59 +407,90 @@ void FlightSimulator::drawAircraft()
 {
     Vector3 pos = { (float)engineState.X, (float)(-engineState.Z), (float)engineState.Y };
 
-    // Get aircraft rotation matrix to determine orientation vectors
     double R[3][3];
     QuaternionOperations::toMatrix(engineState.q, R);
-    
-    // Calculate forward, right, and up vectors from rotation matrix
+
+    // Map body axes (X-forward, Y-right, Z-down) to world axes (X-north, Y-up, Z-east)
     Vector3 forward = { (float)R[0][0], (float)(-R[2][0]), (float)R[1][0] };
     Vector3 right = { (float)R[0][1], (float)(-R[2][1]), (float)R[1][1] };
-    Vector3 up = { (float)R[0][2], (float)(-R[2][2]), (float)R[1][2] };
+    Vector3 up = { (float)(-R[0][2]), (float)R[2][2], (float)(-R[1][2]) };
+
+    forward = Vector3Normalize(forward);
+    right = Vector3Normalize(right);
+    up = Vector3Normalize(up);
     
-    float scale = 8.0f;
-    
-    // Draw main fuselage (along forward direction)
-    Vector3 nose = { pos.x + forward.x * scale * 1.5f, 
-                     pos.y + forward.y * scale * 1.5f, 
-                     pos.z + forward.z * scale * 1.5f };
-    Vector3 tail = { pos.x - forward.x * scale * 1.5f, 
-                     pos.y - forward.y * scale * 1.5f, 
-                     pos.z - forward.z * scale * 1.5f };
-    
-    // Draw fuselage as line (main body)
-    DrawLine3D(nose, tail, RED);
-    DrawSphere(nose, 1.5f, DARKGRAY); // Nose
-    DrawSphere(pos, 2.0f, RED);       // Center body
-    
-    // Draw wings (perpendicular to forward, along right direction)
-    Vector3 leftWing = { pos.x - right.x * scale * 2.0f, 
-                         pos.y - right.y * scale * 2.0f, 
-                         pos.z - right.z * scale * 2.0f };
-    Vector3 rightWing = { pos.x + right.x * scale * 2.0f, 
-                          pos.y + right.y * scale * 2.0f, 
-                          pos.z + right.z * scale * 2.0f };
-    
-    DrawLine3D(leftWing, rightWing, GRAY);
-    DrawSphere(leftWing, 1.0f, GRAY);
-    DrawSphere(rightWing, 1.0f, GRAY);
-    
-    // Draw vertical stabilizer (tail fin, along up direction)
+    if (hasCustomModel) {
+        // Use custom 3D model with proper orientation mapping
+        // Swap right and up vectors to correct the 90-degree roll offset issue
+        Matrix orientation = MatrixIdentity();
+        orientation.m0 = forward.x; orientation.m1 = forward.y; orientation.m2 = forward.z; orientation.m3 = 0.0f;
+        orientation.m4 = up.x;     orientation.m5 = up.y;     orientation.m6 = up.z;     orientation.m7 = 0.0f;
+        orientation.m8 = right.x;   orientation.m9 = right.y;   orientation.m10 = right.z;   orientation.m11 = 0.0f;
+        orientation.m12 = 0.0f;     orientation.m13 = 0.0f;     orientation.m14 = 0.0f;     orientation.m15 = 1.0f;
+
+        aircraftModel.transform = MatrixMultiply(orientation, aircraftModelBaseTransform);
+
+        DrawModel(aircraftModel, pos, customModelScale, WHITE);
+        
+        // Still draw orientation indicators for reference
+        float scale = 15.0f;
+        
+        Vector3 forwardIndicator = { pos.x + forward.x * scale, 
+                                     pos.y + forward.y * scale, 
+                                     pos.z + forward.z * scale };
+        DrawLine3D(pos, forwardIndicator, GREEN); // Green = Forward direction
+        
+        Vector3 upIndicator = { pos.x + up.x * scale * 0.7f, 
+                                pos.y + up.y * scale * 0.7f, 
+                                pos.z + up.z * scale * 0.7f };
+        DrawLine3D(pos, upIndicator, BLUE); // Blue = Up direction
+    } else {
+        // Use original basic aircraft representation
+        float scale = 8.0f;
+        
+        // Draw main fuselage (along forward direction)
+        Vector3 nose = { pos.x + forward.x * scale * 1.5f, 
+                         pos.y + forward.y * scale * 1.5f, 
+                         pos.z + forward.z * scale * 1.5f };
+        Vector3 tail = { pos.x - forward.x * scale * 1.5f, 
+                         pos.y - forward.y * scale * 1.5f, 
+                         pos.z - forward.z * scale * 1.5f };
+        
+        // Draw fuselage as line (main body)
+        DrawLine3D(nose, tail, RED);
+        DrawSphere(nose, 1.5f, DARKGRAY); // Nose
+        DrawSphere(pos, 2.0f, RED);       // Center body
+        
+        // Draw wings (perpendicular to forward, along right direction)
+        Vector3 leftWing = { pos.x - right.x * scale * 2.0f, 
+                             pos.y - right.y * scale * 2.0f, 
+                             pos.z - right.z * scale * 2.0f };
+        Vector3 rightWing = { pos.x + right.x * scale * 2.0f, 
+                              pos.y + right.y * scale * 2.0f, 
+                              pos.z + right.z * scale * 2.0f };
+        
+        DrawLine3D(leftWing, rightWing, GRAY);
+        DrawSphere(leftWing, 1.0f, GRAY);
+        DrawSphere(rightWing, 1.0f, GRAY);
+        
+        // Draw vertical stabilizer (tail fin, along up direction)
     Vector3 tailTop = { tail.x + up.x * scale * 0.8f, 
-                        tail.y + up.y * scale * 0.8f, 
-                        tail.z + up.z * scale * 0.8f };
-    
-    DrawLine3D(tail, tailTop, GRAY);
-    
-    // Draw attitude reference lines to clearly show orientation
-    Vector3 forwardIndicator = { pos.x + forward.x * scale * 3.0f, 
-                                 pos.y + forward.y * scale * 3.0f, 
-                                 pos.z + forward.z * scale * 3.0f };
-    DrawLine3D(pos, forwardIndicator, GREEN); // Green = Forward direction
-    
+                tail.y + up.y * scale * 0.8f, 
+                tail.z + up.z * scale * 0.8f };
+        
+        DrawLine3D(tail, tailTop, GRAY);
+        
+        // Draw attitude reference lines to clearly show orientation
+        Vector3 forwardIndicator = { pos.x + forward.x * scale * 3.0f, 
+                                     pos.y + forward.y * scale * 3.0f, 
+                                     pos.z + forward.z * scale * 3.0f };
+        DrawLine3D(pos, forwardIndicator, GREEN); // Green = Forward direction
+        
     Vector3 upIndicator = { pos.x + up.x * scale * 2.0f, 
-                            pos.y + up.y * scale * 2.0f, 
-                            pos.z + up.z * scale * 2.0f };
-    DrawLine3D(pos, upIndicator, BLUE); // Blue = Up direction
+                pos.y + up.y * scale * 2.0f, 
+                pos.z + up.z * scale * 2.0f };
+        DrawLine3D(pos, upIndicator, BLUE); // Blue = Up direction
+    }
 }
 
 void FlightSimulator::drawFlightPath()
@@ -553,6 +641,8 @@ void FlightSimulator::drawHUD()
     DrawText("C - Switch Camera", 10, 390, 12, WHITE);
     DrawText("Left Click+Drag - Camera", 10, 405, 12, WHITE);
     DrawText("Mouse Wheel - Zoom", 10, 420, 12, WHITE);
+    DrawText("L - Load Aircraft Model", 10, 435, 12, WHITE);
+    DrawText("M - Toggle Model Display", 10, 450, 12, WHITE);
     
     // Control status display (right side)
     DrawText("CONTROL STATUS:", GetScreenWidth() - 200, 50, 14, YELLOW);
@@ -572,6 +662,28 @@ void FlightSimulator::drawHUD()
     sprintf(text, "Throttle: %.2f", controls.throttle);
     Color throttleColor = (controls.throttle > 0.1f) ? GREEN : WHITE;
     DrawText(text, GetScreenWidth() - 200, 115, 12, throttleColor);
+
+    if (activeGamepadIndex >= 0) {
+        sprintf(text, "Gamepad %d: %s", activeGamepadIndex, activeGamepadName.c_str());
+        DrawText(text, GetScreenWidth() - 200, 135, 12, LIGHTGRAY);
+
+        sprintf(text, "Joy Roll: %.2f", lastGamepadRoll);
+        DrawText(text, GetScreenWidth() - 200, 150, 12, LIGHTGRAY);
+
+        sprintf(text, "Joy Pitch: %.2f", lastGamepadPitch);
+        DrawText(text, GetScreenWidth() - 200, 165, 12, LIGHTGRAY);
+
+        sprintf(text, "Axes: %d", lastGamepadAxisCount);
+        DrawText(text, GetScreenWidth() - 200, 180, 12, LIGHTGRAY);
+
+        int displayAxes = std::min<int>((int)lastGamepadAxes.size(), lastGamepadAxisCount);
+        for (int i = 0; i < displayAxes; ++i) {
+            sprintf(text, "A%d: %.2f", i, lastGamepadAxes[i]);
+            DrawText(text, GetScreenWidth() - 200, 195 + i * 12, 12, LIGHTGRAY);
+        }
+    } else {
+        DrawText("Gamepad: Not detected", GetScreenWidth() - 200, 135, 12, RED);
+    }
     
     // Camera mode indicator
     sprintf(text, "Camera: %s", cameraMode == FLIGHT_CAMERA_COCKPIT ? "COCKPIT" : "EXTERNAL");
@@ -602,13 +714,13 @@ void FlightSimulator::updateCameraSystem()
                                      aircraftPos.z + cockpitOffset.z };
         
         // Forward direction in world coordinates (aircraft's nose direction)
-        Vector3 forward = { (float)R[0][0], (float)(-R[2][0]), (float)R[1][0] };
+    Vector3 forward = { (float)R[0][0], (float)(-R[2][0]), (float)R[1][0] };
         camera.target = (Vector3){ camera.position.x + forward.x * 100.0f, 
                                    camera.position.y + forward.y * 100.0f, 
                                    camera.position.z + forward.z * 100.0f };
         
         // Up vector in world coordinates (aircraft's up direction)
-        camera.up = (Vector3){ (float)R[0][2], (float)(-R[2][2]), (float)R[1][2] };
+    camera.up = (Vector3){ (float)(-R[0][2]), (float)R[2][2], (float)(-R[1][2]) };
     } else {
         // External view with mouse control
         float yawRad = cameraYaw * M_PI / 180.0f;
@@ -1078,6 +1190,82 @@ void FlightSimulator::updateControls()
         controls.throttle = fminf(controls.throttle + 1.0f * GetFrameTime(), 1.0f);  // Increase throttle
     } else if (IsKeyDown(KEY_LEFT_CONTROL)) {
         controls.throttle = fmaxf(controls.throttle - 1.0f * GetFrameTime(), 0.0f);  // Decrease throttle
+    }
+
+    // Joystick support: automatically pick the first available gamepad
+    int detectedGamepad = -1;
+    const int maxGamepadSlots = 4;
+    for (int idx = 0; idx < maxGamepadSlots; ++idx) {
+        if (IsGamepadAvailable(idx)) {
+            detectedGamepad = idx;
+            break;
+        }
+    }
+
+    if (detectedGamepad != activeGamepadIndex) {
+        activeGamepadIndex = detectedGamepad;
+        if (activeGamepadIndex >= 0) {
+            const char* name = GetGamepadName(activeGamepadIndex);
+            activeGamepadName = name ? name : "Unknown";
+            std::cout << "Gamepad connected on slot " << activeGamepadIndex << ": "
+                      << activeGamepadName << std::endl;
+        } else {
+            if (!activeGamepadName.empty()) {
+                std::cout << "Gamepad disconnected" << std::endl;
+            }
+            activeGamepadName.clear();
+        }
+    }
+
+    if (activeGamepadIndex >= 0) {
+        const float deadzone = 0.12f;
+
+        auto applyDeadzone = [deadzone](float value) {
+            if (fabsf(value) < deadzone) return 0.0f;
+            float sign = (value > 0.0f) ? 1.0f : -1.0f;
+            float magnitude = (fabsf(value) - deadzone) / (1.0f - deadzone);
+            if (magnitude < 0.0f) magnitude = 0.0f;
+            if (magnitude > 1.0f) magnitude = 1.0f;
+            return magnitude * sign;
+        };
+
+        auto clampInput = [](float value) {
+            if (value > 1.0f) return 1.0f;
+            if (value < -1.0f) return -1.0f;
+            return value;
+        };
+
+        int axisCount = GetGamepadAxisCount(activeGamepadIndex);
+        lastGamepadAxisCount = axisCount;
+        lastGamepadAxes.fill(0.0f);
+        int sampleAxes = std::min<int>((int)lastGamepadAxes.size(), axisCount);
+        for (int a = 0; a < sampleAxes; ++a) {
+            lastGamepadAxes[a] = GetGamepadAxisMovement(activeGamepadIndex, a);
+        }
+
+        if (axisCount > GAMEPAD_AXIS_LEFT_X) {
+            float rawRoll = GetGamepadAxisMovement(activeGamepadIndex, GAMEPAD_AXIS_LEFT_X);
+            float rollInput = applyDeadzone(rawRoll);  // Invert X axis for correct roll direction
+            lastGamepadRoll = rollInput;
+            controls.aileron = clampInput(rollInput);
+        } else {
+            lastGamepadRoll = 0.0f;
+        }
+
+        if (axisCount > GAMEPAD_AXIS_LEFT_Y) {
+            float rawPitch = GetGamepadAxisMovement(activeGamepadIndex, GAMEPAD_AXIS_LEFT_Y);
+            float pitchInput = applyDeadzone(rawPitch);  // Use positive Y for pitch up
+            lastGamepadPitch = pitchInput;
+            // Positive Y should pitch nose up -> positive elevator
+            controls.elevator = clampInput(pitchInput);
+        } else {
+            lastGamepadPitch = 0.0f;
+        }
+    } else {
+        lastGamepadRoll = 0.0f;
+        lastGamepadPitch = 0.0f;
+        lastGamepadAxisCount = 0;
+        lastGamepadAxes.fill(0.0f);
     }
 }
 
